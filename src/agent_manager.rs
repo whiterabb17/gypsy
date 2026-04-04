@@ -12,6 +12,8 @@ use async_trait::async_trait;
 use crate::config::AppConfig;
 use std::path::PathBuf;
 use brain::Brain;
+use shlex;
+use chrono;
 
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
@@ -224,7 +226,23 @@ impl AgentManager {
         let parts: Vec<&str> = input.split_whitespace().collect();
         if parts.is_empty() { return Ok(()); }
 
-        match parts[0] {
+        let command = parts[0];
+        let args_str = if input.len() > command.len() {
+            input[command.len()..].trim()
+        } else {
+            ""
+        };
+
+        match command {
+            "/tools" => {
+                let _ = self.event_tx.send(AgentEvent::Status("Discovering tools...".into()));
+                let tools = self.agent.executor.list_tools().await?;
+                let mut list = String::from("### Available Tools\n\n");
+                for t in tools {
+                    list.push_str(&format!("- `/{}`: {}\n", t.name, t.description));
+                }
+                let _ = self.event_tx.send(AgentEvent::TextChunk(list));
+            }
             "/session" => {
                 if parts.len() < 2 {
                     let _ = self.event_tx.send(AgentEvent::Error("Usage: /session [list|switch <id>]".into()));
@@ -242,8 +260,8 @@ impl AgentManager {
                         for entry in entries {
                             let entry = entry?;
                             let name = entry.file_name().into_string().unwrap_or_default();
-                            if name.ends_with(".json") {
-                                let id = name.trim_start_matches("session_").trim_end_matches(".json");
+                            if name.ends_with(".json") || name.ends_with(".session") {
+                                let id = name.trim_start_matches("session_").trim_end_matches(".json").trim_end_matches(".session");
                                 list.push_str(&format!("- {}\n", id));
                             }
                         }
@@ -257,8 +275,12 @@ impl AgentManager {
                         let new_id = parts[2];
                         let _ = self.event_tx.send(AgentEvent::Status(format!("Switching to {}...", new_id)));
                         
-                        // We need a way to re-init. For now, we'll try to reload the state.
-                        let state_path = PathBuf::from(".agent/sessions").join(format!("session_{}.json", new_id));
+                        let session_file = format!("session_{}.json", new_id);
+                        let mut state_path = PathBuf::from(".agent/sessions").join(&session_file);
+                        if !state_path.exists() {
+                             state_path = PathBuf::from(".agent/sessions").join(format!("session_{}.session", new_id));
+                        }
+
                         if !state_path.exists() {
                             let _ = self.event_tx.send(AgentEvent::Error(format!("Session {} not found", new_id)));
                             return Ok(());
@@ -314,6 +336,15 @@ impl AgentManager {
                     let _ = self.event_tx.send(AgentEvent::TextChunk(format!("Context optimized: {} -> {} items.\n", before, after)));
                 }
             }
+            _ if command.starts_with('/') => {
+                let tool_name = &command[1..];
+                let tools = self.agent.executor.list_tools().await?;
+                if let Some(tool_def) = tools.iter().find(|t| t.name == tool_name).cloned() {
+                    self.execute_tool_command(tool_name, args_str, &tool_def).await?;
+                } else {
+                    let _ = self.event_tx.send(AgentEvent::Error(format!("Unknown command or tool: {}", command)));
+                }
+            }
             _ => {
                 let _ = self.event_tx.send(AgentEvent::Error(format!("Unknown command: {}", parts[0])));
             }
@@ -322,6 +353,75 @@ impl AgentManager {
         let _ = self.event_tx.send(AgentEvent::Status("Idle".to_string()));
         Ok(())
     }
+
+    async fn execute_tool_command(&mut self, name: &str, args_str: &str, def: &mem_core::ToolDefinition) -> Result<()> {
+        let _ = self.event_tx.send(AgentEvent::Status(format!("Executing Tool: {}", name)));
+        
+        // Simple argument parsing
+        let args = self.parse_tool_args(args_str, def)?;
+        
+        match self.agent.executor.execute(name, args.clone()).await {
+            Ok(res) => {
+                // Update context
+                let mut current_ctx = (*self.agent.state.context).clone();
+                current_ctx.items.push(mem_core::MemoryItem {
+                    role: mem_core::MemoryRole::User,
+                    content: format!("MANUAL TOOL CALL: /{} {}", name, args_str),
+                    timestamp: chrono::Utc::now().timestamp() as u64,
+                    metadata: serde_json::json!({}),
+                });
+                current_ctx.items.push(mem_core::MemoryItem {
+                    role: mem_core::MemoryRole::Tool,
+                    content: res.clone(),
+                    timestamp: chrono::Utc::now().timestamp() as u64,
+                    metadata: serde_json::json!({"tool": name}),
+                });
+                self.agent.state.context = Arc::new(current_ctx);
+                
+                let _ = self.event_tx.send(AgentEvent::TextChunk(format!("\n#### Tool Result: {}\n---\n{}\n---\n", name, res)));
+            }
+            Err(e) => {
+                let _ = self.event_tx.send(AgentEvent::Error(format!("Tool execution failed: {}", e)));
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_tool_args(&self, args_str: &str, def: &mem_core::ToolDefinition) -> Result<serde_json::Value> {
+        if args_str.trim().is_empty() {
+            return Ok(serde_json::json!({}));
+        }
+
+        // 1. Try parsing as JSON first
+        if let Ok(val) = serde_json::from_str(args_str) {
+            return Ok(val);
+        }
+
+        // 2. Try parsing as key=value pairs
+        let mut map = serde_json::Map::new();
+        let parts = shlex::split(args_str).unwrap_or_default();
+        for part in parts {
+            if let Some((k, v)) = part.split_once('=') {
+                map.insert(k.to_string(), serde_json::json!(v));
+            }
+        }
+
+        if !map.is_empty() {
+            return Ok(serde_json::Value::Object(map));
+        }
+
+        // 3. Fallback: If tool has exactly one parameter, pass the whole string
+        if let Some(obj) = def.parameters.get("properties").and_then(|p| p.as_object()) {
+            if obj.len() == 1 {
+                let key = obj.keys().next().unwrap();
+                return Ok(serde_json::json!({ key: args_str }));
+            }
+        }
+
+        // Default to passing as a single string if it's not JSON/K=V
+        Ok(serde_json::json!(args_str))
+    }
+
 
     async fn consume_context(&mut self) -> Result<usize> {
         let root = std::env::current_dir()?;
