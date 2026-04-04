@@ -38,6 +38,8 @@ pub struct AppConfig {
 
     // Tools
     pub mcp_servers: std::collections::HashMap<String, String>,
+    pub mcp_filesystem_paths: Vec<String>,
+    pub firecrawl_api_key: Option<String>,
     pub skills_path: String,
 }
 
@@ -60,6 +62,10 @@ impl AppConfig {
                 wasm_env_vars.insert(k.trim_start_matches("WASM_ENV_").to_string(), v);
             }
         }
+
+        let mcp_filesystem_paths = std::env::var("MCP_FS_PATHS")
+            .map(|v| v.split(',').map(|s| s.trim().to_string()).collect())
+            .unwrap_or_default();
 
         Self {
             provider: std::env::var("PROVIDER").unwrap_or_else(|_| "ollama".to_string()),
@@ -98,6 +104,8 @@ impl AppConfig {
                 .filter(|(k, _)| k.starts_with("MCP_SERVER_"))
                 .map(|(k, v)| (k.trim_start_matches("MCP_SERVER_").to_lowercase(), v))
                 .collect(),
+            mcp_filesystem_paths,
+            firecrawl_api_key: std::env::var("FIRECRAWL_API_KEY").ok(),
             skills_path: std::env::var("SKILLS_PATH").unwrap_or_else(|_| ".agent/skills".to_string()),
         }
     }

@@ -13,7 +13,10 @@
 
 - **🛡️ Hardened Execution**: Multi-layered sandbox support (Wasm/Docker) with strict **4GB RAM limits**, **CPU Fueling**, and a **Malicious Command Blocker**.
 - **🧠 Resilient Long-Term Memory**: Automatic fact extraction and RAG-based context injection via the **MindPalace** core.
+- **🌐 Built-in Web Search**: Integrated **Firecrawl** and **Tavily** MCP support for advanced web scraping and markdown data retrieval.
+- **📂 Secure Filesystem MCP**: Native, standard-compliant filesystem tools restricted to your project root or workspace.
 - **📦 Staging Vault Architecture**: All file modifications are staged in a secure vault; changes only touch your project root after manual approval.
+- **🧩 Extensible Skills**: Drop new Python/JS scripts into the `skills/` folder to instantly "teach" the agent new capabilities.
 - **✨ Professional UI/UX**: Real-time LLM streaming, dynamic thinking visuals, and a session-centric TUI with comprehensive metrics.
 - **🤖 Autonomous Infrastructure**: Cross-platform automation of **Ollama** life-cycles (auto-start, auto-pull, and health monitoring).
 
@@ -42,6 +45,8 @@ Key settings in `.env`:
 - `PROVIDER`: `ollama`, `openai`, `anthropic`, or `gemini`.
 - `SANDBOX_MODE`: `wasm` (Safe) or `local` (Direct).
 - `VAULT_PATH`: Staging directory for agent-modified files.
+- `FIRECRAWL_API_KEY`: Required for web-search capabilities.
+- `MCP_FS_PATHS`: Comma-separated list of local paths the agent can access.
 
 ---
 

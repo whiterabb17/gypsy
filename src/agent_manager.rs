@@ -143,6 +143,19 @@ impl AgentManager {
             }
         }
 
+        // Add Built-in Filesystem MCP (Default to current dir if no paths provided)
+        let fs_paths = if config.mcp_filesystem_paths.is_empty() {
+            vec![".".to_string()]
+        } else {
+            config.mcp_filesystem_paths.clone()
+        };
+        multi_executor.add_executor(Arc::new(mentalist::mcp::BuiltinMcp::filesystem(fs_paths)));
+
+        // Add Built-in Firecrawl MCP (if API key provided)
+        if let Some(ref api_key) = config.firecrawl_api_key {
+            multi_executor.add_executor(Arc::new(mentalist::mcp::BuiltinMcp::firecrawl(api_key.clone())));
+        }
+
         // Add Skills from config
         let skills_path = PathBuf::from(&config.skills_path);
         let skill_executor = tokio::task::block_in_place(|| {
