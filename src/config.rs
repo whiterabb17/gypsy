@@ -84,7 +84,10 @@ impl AppConfig {
 
             storage_path,
             vault_path: std::env::var("VAULT_PATH").ok(),
-            session_id: std::env::var("SESSION_ID").unwrap_or_else(|_| "gypsy_dev_001".to_string()),
+            session_id: std::env::var("SESSION_ID").unwrap_or_else(|_| {
+                let now = chrono::Utc::now();
+                format!("gypsy_{}", now.format("%Y%m%d_%H%M%S"))
+            }),
         }
     }
 

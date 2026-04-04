@@ -3,7 +3,7 @@ use tokio::sync::mpsc;
 use anyhow::Result;
 use mentalist::{Harness, DeepAgent, DeepAgentState, Request, Response, ToolCall, ModelProvider};
 use mentalist::middleware::{Middleware, MindPalaceMiddleware};
-use mem_core::{Context, FileStorage, EmbeddingProvider, LlmClient, TokenCounter};
+use mem_core::{Context, FileStorage, EmbeddingProvider, LlmClient, TokenCounter, MemoryItem, MemoryRole};
 use mem_resilience::ResilientMemoryController;
 use async_trait::async_trait;
 use crate::config::AppConfig;
@@ -143,6 +143,10 @@ impl AgentManager {
     }
 
     pub async fn run_step(&mut self, input: String) -> Result<()> {
+        if input.starts_with('/') {
+            return self.handle_command(&input).await;
+        }
+
         use mentalist::agent::AgentStepEvent;
         use futures_util::StreamExt;
         
@@ -166,6 +170,138 @@ impl AgentManager {
         
         let _ = self.event_tx.send(AgentEvent::Status("Idle".to_string()));
         Ok(())
+    }
+
+    async fn handle_command(&mut self, input: &str) -> Result<()> {
+        let parts: Vec<&str> = input.split_whitespace().collect();
+        if parts.is_empty() { return Ok(()); }
+
+        match parts[0] {
+            "/session" => {
+                if parts.len() < 2 {
+                    let _ = self.event_tx.send(AgentEvent::Error("Usage: /session [list|switch <id>]".into()));
+                    return Ok(());
+                }
+                match parts[1] {
+                    "list" => {
+                        let sessions_dir = PathBuf::from(".agent/sessions");
+                        if !sessions_dir.exists() {
+                            let _ = self.event_tx.send(AgentEvent::TextChunk("No sessions found.".into()));
+                            return Ok(());
+                        }
+                        let entries = std::fs::read_dir(sessions_dir)?;
+                        let mut list = String::from("Detected Sessions:\n");
+                        for entry in entries {
+                            let entry = entry?;
+                            let name = entry.file_name().into_string().unwrap_or_default();
+                            if name.ends_with(".json") {
+                                let id = name.trim_start_matches("session_").trim_end_matches(".json");
+                                list.push_str(&format!("- {}\n", id));
+                            }
+                        }
+                        let _ = self.event_tx.send(AgentEvent::TextChunk(list));
+                    }
+                    "switch" => {
+                        if parts.len() < 3 {
+                            let _ = self.event_tx.send(AgentEvent::Error("Usage: /session switch <id>".into()));
+                            return Ok(());
+                        }
+                        let new_id = parts[2];
+                        let _ = self.event_tx.send(AgentEvent::Status(format!("Switching to {}...", new_id)));
+                        
+                        // We need a way to re-init. For now, we'll try to reload the state.
+                        let state_path = PathBuf::from(".agent/sessions").join(format!("session_{}.json", new_id));
+                        if !state_path.exists() {
+                            let _ = self.event_tx.send(AgentEvent::Error(format!("Session {} not found", new_id)));
+                            return Ok(());
+                        }
+                        
+                        let data = std::fs::read_to_string(&state_path)?;
+                        let mut new_state: DeepAgentState = serde_json::from_str(&data)?;
+                        new_state.sandbox_root = std::env::current_dir()?;
+                        self.agent.state = new_state;
+                        
+                        let _ = self.event_tx.send(AgentEvent::TextChunk(format!("Switched to session: {}\n", new_id)));
+                    }
+                    _ => {
+                        let _ = self.event_tx.send(AgentEvent::Error("Usage: /session [list|switch <id>]".into()));
+                    }
+                }
+            }
+            "/consume" => {
+                let _ = self.event_tx.send(AgentEvent::Status("Studying current directory...".into()));
+                match self.consume_context().await {
+                    Ok(count) => {
+                        let _ = self.event_tx.send(AgentEvent::TextChunk(format!("Studied {} files. Knowledge base updated.", count)));
+                    }
+                    Err(e) => {
+                        let _ = self.event_tx.send(AgentEvent::Error(format!("Consume failed: {}", e)));
+                    }
+                }
+            }
+            "/review" => {
+                let _ = self.event_tx.send(AgentEvent::Status("Auditing staged changes...".into()));
+                match self.review_vault().await {
+                    Ok(report) => {
+                        let _ = self.event_tx.send(AgentEvent::TextChunk(format!("## Audit Review Report\n{}", report)));
+                    }
+                    Err(e) => {
+                        let _ = self.event_tx.send(AgentEvent::Error(format!("Review failed: {}", e)));
+                    }
+                }
+            }
+            _ => {
+                let _ = self.event_tx.send(AgentEvent::Error(format!("Unknown command: {}", parts[0])));
+            }
+        }
+        
+        let _ = self.event_tx.send(AgentEvent::Status("Idle".to_string()));
+        Ok(())
+    }
+
+    async fn consume_context(&mut self) -> Result<usize> {
+        let root = std::env::current_dir()?;
+        let mut count = 0;
+        
+        // Simple recursive text walker (ignoring binary/hidden/node_modules)
+        let entries = self.walk_dir(&root)?;
+        for path in entries {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                // For now, let's just trigger a specialized reasoning loop step
+                let _ = self.agent.step(format!("Study this file and extract its core knowledge: {:?}\n\nCONTENT:\n{}", path.strip_prefix(&root).unwrap_or(&path), content)).await?;
+                count += 1;
+        }
+        Ok(count)
+    }
+
+    fn walk_dir(&self, dir: &PathBuf) -> Result<Vec<PathBuf>> {
+        let mut files = Vec::new();
+        if dir.is_dir() {
+            for entry in std::fs::read_dir(dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.is_file() {
+                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default();
+                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+                    if ["rs", "toml", "md", "txt", "js", "ts", "json", "env"].contains(&ext) && !name.starts_with('.') {
+                        files.push(path);
+                    }
+                } else if path.is_dir() {
+                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+                    if name != "target" && name != "node_modules" && !name.starts_with('.') {
+                        files.extend(self.walk_dir(&path)?);
+                    }
+                }
+            }
+        }
+        Ok(files)
+    }
+
+    async fn review_vault(&mut self) -> Result<String> {
+        let _ = self.event_tx.send(AgentEvent::Status("Reading vault contents...".into()));
+        // Logic to read vault and run specialized AI step
+        let report = self.agent.step("Perform an audit review of all files in the staging vault. Identify bugs, errors, and potential enhancements.".into()).await?;
+        Ok(report)
     }
 }
 
