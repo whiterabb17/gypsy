@@ -1,13 +1,26 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
     Frame,
 };
 // use std::time::Duration;
 
-#[derive(Default)]
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span, Text};
+
+#[derive(Clone, Debug)]
+pub enum LogEntry {
+    Info(String),
+    Debug(String),
+    Warn(String),
+    Error(String),
+    Trace(String),
+    User(String),
+    Gypsy(String),
+}
+
 pub struct AppState {
-    pub log: Vec<String>,
+    pub log: Vec<LogEntry>,
     pub tokens: usize,
     pub context_size: usize,
     pub current_step: String,
@@ -15,6 +28,13 @@ pub struct AppState {
     pub status: String,
     pub is_thinking: bool,
     pub counter: usize,
+    
+    // New UI State
+    pub available_commands: Vec<String>,
+    pub autocomplete_suggestions: Vec<String>,
+    pub show_debug: bool,
+    pub log_scroll: u16,
+    pub system_log_scroll: u16,
 }
 
 impl AppState {
@@ -28,6 +48,11 @@ impl AppState {
             input_buffer: String::new(),
             is_thinking: false,
             counter: 0,
+            available_commands: Vec::new(),
+            autocomplete_suggestions: Vec::new(),
+            show_debug: false,
+            log_scroll: 0,
+            system_log_scroll: 0,
         }
     }
 }
@@ -44,14 +69,56 @@ pub fn ui(f: &mut Frame, state: &AppState) {
         .constraints([Constraint::Min(3), Constraint::Length(3)])
         .split(chunks[0]);
 
-    let log_items: Vec<ListItem> = state
-        .log
-        .iter()
-        .map(|line| ListItem::new(line.as_str()))
+    // 1. Interaction (Chat) Logs
+    let chat_log: Vec<&LogEntry> = state.log.iter()
+        .filter(|e| {
+            match e {
+                LogEntry::User(_) | LogEntry::Gypsy(_) | LogEntry::Error(_) => true,
+                _ => false
+            }
+        })
         .collect();
-    let log_list = List::new(log_items)
-        .block(Block::default().borders(Borders::ALL).title("Agent Session Log"));
-    f.render_widget(log_list, left_chunks[0]);
+
+    // 2. Systems (Under-the-Hood) Logs
+    let system_log: Vec<&LogEntry> = state.log.iter()
+        .filter(|e| {
+            match e {
+                LogEntry::Debug(_) | LogEntry::Trace(_) => state.show_debug,
+                LogEntry::Info(msg) | LogEntry::Warn(msg) => {
+                    // Include any log that isn't a direct chat entry
+                    !msg.contains("User:") && !msg.contains("Gypsy:") && !msg.contains("ERROR:")
+                },
+                _ => false
+            }
+        })
+        .collect();
+
+    let mut chat_text = Text::default();
+    for entry in chat_log {
+        let line = match entry {
+            LogEntry::User(msg) => Line::from(vec![
+                Span::styled("User: ", Style::default().fg(Color::Cyan)),
+                Span::raw(msg),
+            ]),
+            LogEntry::Gypsy(msg) => Line::from(vec![
+                Span::styled("Gypsy: ", Style::default().fg(Color::Green)),
+                Span::raw(msg),
+            ]),
+            LogEntry::Error(msg) => Line::from(vec![
+                Span::styled("ERROR: ", Style::default().fg(Color::Red)),
+                Span::raw(msg),
+            ]),
+            _ => continue,
+        };
+        chat_text.lines.push(line);
+    }
+
+    let chat_paragraph = Paragraph::new(chat_text)
+        .block(Block::default().borders(Borders::ALL).title("Agent Session Log"))
+        .wrap(Wrap { trim: true })
+        .scroll((state.log_scroll, 0));
+    
+    f.render_widget(chat_paragraph, left_chunks[0]);
 
     let input_title = if state.is_thinking {
         let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -59,6 +126,31 @@ pub fn ui(f: &mut Frame, state: &AppState) {
     } else {
         "Input Prompt".to_string()
     };
+
+    // Autocomplete layer
+    if !state.autocomplete_suggestions.is_empty() {
+        let suggestion_items: Vec<ListItem> = state.autocomplete_suggestions.iter()
+            .map(|s| ListItem::new(s.as_str()))
+            .collect();
+        
+        let suggestions_len = suggestion_items.len().min(5);
+        let height = (suggestions_len as u16) + 2;
+        
+        let area = left_chunks[1];
+        let popup_area = ratatui::layout::Rect::new(
+            area.x,
+            area.y.saturating_sub(height),
+            area.width,
+            height
+        );
+        
+        let suggestions_list = List::new(suggestion_items)
+            .block(Block::default().borders(Borders::ALL).title("Suggestions")
+            .border_style(Style::default().fg(Color::Cyan)));
+        
+        f.render_widget(ratatui::widgets::Clear, popup_area);
+        f.render_widget(suggestions_list, popup_area);
+    }
 
     let input = Paragraph::new(state.input_buffer.as_str())
         .block(Block::default().borders(Borders::ALL).title(input_title));
@@ -73,6 +165,7 @@ pub fn ui(f: &mut Frame, state: &AppState) {
             Constraint::Length(3),
             Constraint::Length(3),
             Constraint::Min(0),
+            Constraint::Length(5),
         ])
         .split(chunks[1]);
 
@@ -99,7 +192,61 @@ pub fn ui(f: &mut Frame, state: &AppState) {
         .block(Block::default().borders(Borders::ALL).title("Context Items Count"));
     f.render_widget(context_para, right_chunks[3]);
 
-    let help = Paragraph::new("Esc: Quit\nEnter: Submit Prompt")
-        .block(Block::default().borders(Borders::ALL).title("Quick Help"));
-    f.render_widget(help, right_chunks[4]);
+    // Render Under-the-Hood Logs
+    let mut system_text = Text::default();
+    for entry in system_log {
+        let line = match entry {
+            LogEntry::Warn(msg) => Line::from(vec![
+                Span::styled("WARN:  ", Style::default().fg(Color::Yellow)),
+                Span::raw(msg),
+            ]),
+            LogEntry::Debug(msg) => Line::from(vec![
+                Span::styled("DEBUG: ", Style::default().fg(Color::DarkGray)),
+                Span::raw(msg),
+            ]),
+            LogEntry::Trace(msg) => Line::from(vec![
+                Span::styled("TRACE: ", Style::default().fg(Color::Gray)),
+                Span::raw(msg),
+            ]),
+            LogEntry::Info(msg) => Line::from(vec![
+                Span::styled("INFO:  ", Style::default().fg(Color::White)),
+                Span::raw(msg),
+            ]),
+            _ => continue,
+        };
+        system_text.lines.push(line);
+    }
+
+    let system_paragraph = Paragraph::new(system_text)
+        .block(Block::default().borders(Borders::ALL).title(format!("Under-the-Hood{}", if state.show_debug { " [DEBUG ON]" } else { "" })))
+        .wrap(Wrap { trim: true })
+        .scroll((state.system_log_scroll, 0));
+    
+    f.render_widget(system_paragraph, right_chunks[4]);
+
+    let help_area = right_chunks[5];
+    let help_columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(help_area);
+
+    let (left_help, right_help) = if state.input_buffer.starts_with('/') {
+        (
+            "Esc: Quit\nEnter: Submit",
+            "Tab: Complete"
+        )
+    } else {
+        (
+            "Esc: Quit\nEnter: Submit\nF1: Debug",
+            "PgUp: Up\nPgDn: Down"
+        )
+    };
+
+    let help_left = Paragraph::new(left_help)
+        .block(Block::default().borders(Borders::LEFT | Borders::TOP | Borders::BOTTOM).title("Quick Help"));
+    let help_right = Paragraph::new(right_help)
+        .block(Block::default().borders(Borders::RIGHT | Borders::TOP | Borders::BOTTOM));
+    
+    f.render_widget(help_left, help_columns[0]);
+    f.render_widget(help_right, help_columns[1]);
 }

@@ -88,7 +88,8 @@ impl AgentManager {
             Arc::new(MockLlmClient),
             embeddings.clone(),
             token_counter.clone(),
-            session_id.clone()
+            session_id.clone(),
+            config.embedding_dimension,
         );
         
         let brain = Arc::new(Brain::new(mp_config, None, Some(token_counter.clone())));
@@ -188,8 +189,25 @@ impl AgentManager {
         };
 
         let agent = DeepAgent::new(harness, state, multi_executor, memory_controller);
-
         Ok(Self { agent, event_tx })
+    }
+
+    pub async fn get_available_commands(&self) -> Result<Vec<String>> {
+        let mut commands = vec![
+            "/tools".to_string(),
+            "/session".to_string(),
+            "/consume".to_string(),
+            "/review".to_string(),
+            "/exit".to_string(),
+            "/summarize".to_string(),
+        ];
+        
+        let tools = self.agent.executor.list_tools().await?;
+        for t in tools {
+            commands.push(format!("/{}", t.name));
+        }
+        
+        Ok(commands)
     }
 
     pub async fn run_step(&mut self, input: String) -> Result<()> {

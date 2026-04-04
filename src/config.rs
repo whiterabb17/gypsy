@@ -11,6 +11,7 @@ pub struct AppConfig {
     pub anthropic_api_key: Option<String>,
     pub openai_api_key: Option<String>,
     pub gemini_api_key: Option<String>,
+    pub embedding_dimension: usize,
 
     // MindPalace Core
     pub similarity_threshold: f32,
@@ -75,6 +76,7 @@ impl AppConfig {
             anthropic_api_key: std::env::var("ANTHROPIC_API_KEY").ok(),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             gemini_api_key: std::env::var("GEMINI_API_KEY").ok(),
+            embedding_dimension: std::env::var("EMBEDDING_DIMENSION").ok().and_then(|v| v.parse().ok()).unwrap_or(1536),
 
             similarity_threshold: std::env::var("SIMILARITY_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(0.85),
             compression_ratio: std::env::var("COMPRESSION_RATIO").ok().and_then(|v| v.parse().ok()).unwrap_or(0.6),

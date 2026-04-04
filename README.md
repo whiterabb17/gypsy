@@ -50,6 +50,21 @@ Key settings in `.env`:
 
 ---
 
+## 🕹️ Interacting with Gypsy
+
+Gypsy provides a powerful, keyboard-driven interface with several helpful shortcuts for efficient navigation:
+
+| Key | Action |
+| :--- | :--- |
+| **`/`** | **Command Autocomplete**: Typing `/` opens a suggestions box for available commands and tools. |
+| **`Tab`** | **Autocomplete**: Rapidly complete the first suggested command. |
+| **`F1`** | **Toggle Debug**: Show/Hide detailed `TRACE` and `DEBUG` logs (useful for troubleshooting). |
+| **`PgUp / PgDn`** | **Scroll**: Manually scroll through the session log history. |
+| **`Esc`**| **Quit**: Cleanly exit the session. |
+| **`Enter`** | **Submit**: Send your prompt to the agent. |
+
+---
+
 ## ⌨️ Operational Commands
 
 Gypsy isn't just a chatbot—it's an operational workbench. Use these internal commands to manage your environment:
