@@ -3,7 +3,7 @@ use tokio::sync::mpsc;
 use anyhow::Result;
 use mentalist::{Harness, DeepAgent, DeepAgentState, Request, Response, ToolCall, ModelProvider};
 use mentalist::middleware::{Middleware, MindPalaceMiddleware};
-use mem_core::{Context, FileStorage, EmbeddingProvider, LlmClient, TokenCounter, MemoryItem, MemoryRole};
+use mem_core::{Context, FileStorage, EmbeddingProvider, LlmClient, TokenCounter};
 use mem_resilience::ResilientMemoryController;
 use async_trait::async_trait;
 use crate::config::AppConfig;
@@ -13,6 +13,7 @@ use mentalist::executor::ExecutionMode;
 
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
+    Quit,
     Status(String),
     TextChunk(String),
     MetricUpdate {
@@ -58,8 +59,8 @@ impl Middleware for MonitoringMiddleware {
 }
 
 pub struct AgentManager {
-    agent: DeepAgent,
-    event_tx: mpsc::UnboundedSender<AgentEvent>,
+    pub agent: DeepAgent,
+    pub event_tx: mpsc::UnboundedSender<AgentEvent>,
 }
 
 impl AgentManager {
@@ -250,6 +251,19 @@ impl AgentManager {
                     }
                 }
             }
+            "/exit" => {
+                let _ = self.event_tx.send(AgentEvent::Quit);
+            }
+            "/summarize" => {
+                let _ = self.event_tx.send(AgentEvent::Status("Optimizing context...".into()));
+                let before = self.agent.state.context.items.len();
+                if let Err(e) = self.agent.harness.optimize_context(&mut self.agent.state.context).await {
+                    let _ = self.event_tx.send(AgentEvent::Error(format!("Summarization failed: {}", e)));
+                } else {
+                    let after = self.agent.state.context.items.len();
+                    let _ = self.event_tx.send(AgentEvent::TextChunk(format!("Context optimized: {} -> {} items.\n", before, after)));
+                }
+            }
             _ => {
                 let _ = self.event_tx.send(AgentEvent::Error(format!("Unknown command: {}", parts[0])));
             }
@@ -270,6 +284,7 @@ impl AgentManager {
                 // For now, let's just trigger a specialized reasoning loop step
                 let _ = self.agent.step(format!("Study this file and extract its core knowledge: {:?}\n\nCONTENT:\n{}", path.strip_prefix(&root).unwrap_or(&path), content)).await?;
                 count += 1;
+            }
         }
         Ok(count)
     }
@@ -310,6 +325,6 @@ struct MockLlmClient;
 #[async_trait]
 impl LlmClient for MockLlmClient {
     async fn completion(&self, _prompt: &str) -> Result<String> {
-        Ok("Mock".to_string())
+        Ok("[]".to_string())
     }
 }

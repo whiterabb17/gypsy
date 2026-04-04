@@ -1,10 +1,6 @@
-mod agent_manager;
-mod ui;
-mod config;
-
-use crate::config::AppConfig;
-use crate::agent_manager::{AgentEvent, AgentManager};
-use crate::ui::{AppState, ui};
+use gypsy::config::AppConfig;
+use gypsy::agent_manager::{AgentEvent, AgentManager};
+use gypsy::ui::{AppState, ui};
 
 use anyhow::{Result, Context as _};
 use crossterm::{
@@ -67,12 +63,22 @@ async fn ensure_ollama_ready(config: &AppConfig) -> Result<()> {
 async fn start_ollama_daemon() -> Result<()> {
     #[cfg(target_os = "macos")]
     {
-        let path = "/Applications/Ollama.app/Contents/MacOS/ollama";
-        if std::path::Path::new(path).exists() {
-            tokio::process::Command::new(path)
-                .arg("serve")
-                .spawn()?;
-            return Ok(());
+        let paths = [
+            "/usr/local/bin/ollama",
+            "/Applications/Ollama.app/Contents/Resources/ollama",
+            "/Applications/Ollama.app/Contents/MacOS/ollama"
+        ];
+        for path in paths {
+            if std::path::Path::new(path).exists() {
+                // The MacOS/ollama path might be the app wrapper, so we try without args there or handle it
+                let mut cmd = tokio::process::Command::new(path);
+                if path.contains("Resources") || path.contains("bin") {
+                    cmd.arg("serve");
+                }
+                if cmd.spawn().is_ok() {
+                    return Ok(());
+                }
+            }
         }
     }
 
@@ -197,13 +203,18 @@ async fn main() -> Result<()> {
         }
     });
 
-    loop {
+    'main_loop: loop {
         terminal.draw(|f| ui(f, &state))?;
 
         if event::poll(Duration::from_millis(10))? {
             if let Event::Key(key) = event::read()? {
                 if let KeyCode::Esc = key.code {
                     break;
+                }
+                if let KeyCode::Char('c') = key.code {
+                    if key.modifiers.contains(event::KeyModifiers::CONTROL) {
+                        break;
+                    }
                 }
                 match key.code {
                     KeyCode::Enter => {
@@ -225,6 +236,9 @@ async fn main() -> Result<()> {
         // Handle Agent Events
         while let Ok(event) = event_rx.try_recv() {
             match event {
+                AgentEvent::Quit => {
+                    break 'main_loop;
+                }
                 AgentEvent::Status(s) => {
                     if s == "Idle" {
                         state.is_thinking = false;

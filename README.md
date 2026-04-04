@@ -55,6 +55,11 @@ Gypsy isn't just a chatbot—it's an operational workbench. Use these internal c
 | `/session switch <id>` | Instantly reloads the agent with the history and context of another session. |
 | `/consume` | **Study Mode**: Recursively walk the project directory and index it into local knowledge. |
 | `/review` | **Audit Mode**: Performs an AI review of all files currently staged in the **Vault**. |
+| `/summarize` | **Context Reduction**: Triggers the 7-layer optimization loop to compact history. |
+| `/exit` | **Graceful Shutdown**: Shuts down the agent and restores terminal state. |
+
+> [!TIP]
+> You can also press `Ctrl+C` or `Esc` at any time to gracefully exit and restore your terminal.
 
 ---
 
