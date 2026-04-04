@@ -15,7 +15,7 @@ struct HappyModel {
 
 #[async_trait]
 impl ModelProvider for HappyModel {
-    async fn complete(&self, req: Request) -> anyhow::Result<Response> {
+    async fn complete(&self, _req: Request) -> anyhow::Result<Response> {
         let mut count = self.call_count.lock().await;
         *count += 1;
 
@@ -37,8 +37,8 @@ impl ModelProvider for HappyModel {
         })
     }
     
-    async fn stream_complete(&self, req: Request) -> anyhow::Result<BoxStream<'static, anyhow::Result<ResponseChunk>>> {
-        let res = self.complete(req).await?;
+    async fn stream_complete(&self, _req: Request) -> anyhow::Result<BoxStream<'static, anyhow::Result<ResponseChunk>>> {
+        let res = self.complete(_req).await?;
         
         // Simulate streaming tool calls if present
         let mut chunks = vec![];

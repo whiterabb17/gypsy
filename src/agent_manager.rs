@@ -2,14 +2,16 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use anyhow::Result;
 use mentalist::{Harness, DeepAgent, DeepAgentState, Request, Response, ToolCall, ModelProvider};
-use mentalist::middleware::{Middleware, MindPalaceMiddleware};
+use mentalist::executor::{ExecutionMode, MultiExecutor};
+use mentalist::mcp::McpExecutor;
+use mentalist::skills::SkillExecutor;
+use mentalist::middleware::{Middleware, MindPalaceMiddleware, ToolDiscoveryMiddleware};
 use mem_core::{Context, FileStorage, EmbeddingProvider, LlmClient, TokenCounter};
 use mem_resilience::ResilientMemoryController;
 use async_trait::async_trait;
 use crate::config::AppConfig;
 use std::path::PathBuf;
 use brain::Brain;
-use mentalist::executor::ExecutionMode;
 
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
@@ -100,8 +102,8 @@ impl AgentManager {
         };
 
         let mut harness = Harness::new(provider);
-        harness.add_middleware(Box::new(mp_middleware));
-        harness.add_middleware(Box::new(monitoring));
+        harness.add_middleware(Arc::new(mp_middleware));
+        harness.add_middleware(Arc::new(monitoring));
 
         let exec_mode = match config.sandbox_mode.to_lowercase().as_str() {
             "docker" => ExecutionMode::Docker {
@@ -117,12 +119,41 @@ impl AgentManager {
             _ => ExecutionMode::Local,
         };
 
-        let vault_path = config.vault_path.map(PathBuf::from);
-        let executor = mentalist::executor::SandboxedExecutor::new(
+        let vault_path = config.vault_path.clone().map(PathBuf::from);
+        let sandbox_executor = Arc::new(mentalist::executor::SandboxedExecutor::new(
             exec_mode,
             std::env::current_dir()?,
             vault_path
-        );
+        )?);
+
+        let mut multi_executor = MultiExecutor::new();
+        multi_executor.add_executor(sandbox_executor);
+
+        // Add MCP servers from config
+        for (_name, cmd_line) in &config.mcp_servers {
+            let parts: Vec<String> = shlex::split(cmd_line)
+                .unwrap_or_default();
+            if !parts.is_empty() {
+                let cmd = parts[0].clone();
+                let args = parts[1..].to_vec();
+                multi_executor.add_executor(Arc::new(McpExecutor::new(cmd, args)));
+            }
+        }
+
+        // Add Skills from config
+        let skills_path = PathBuf::from(&config.skills_path);
+        let skill_executor = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                SkillExecutor::new(skills_path).await
+            })
+        })?;
+        let skill_executor = Arc::new(skill_executor);
+        multi_executor.add_executor(skill_executor);
+
+        let multi_executor = Arc::new(multi_executor);
+
+        // Add Tool Discovery Middleware
+        harness.add_middleware(Arc::new(ToolDiscoveryMiddleware::new(multi_executor.clone())));
 
         let state_path = PathBuf::from(".agent/sessions").join(format!("session_{}.json", session_id));
         let state = if state_path.exists() {
@@ -133,12 +164,12 @@ impl AgentManager {
         } else {
             DeepAgentState {
                 session_id,
-                context: Context { items: vec![] },
+                context: Arc::new(Context { items: vec![] }),
                 sandbox_root: std::env::current_dir()?,
             }
         };
 
-        let agent = DeepAgent::new(harness, state, executor, memory_controller);
+        let agent = DeepAgent::new(harness, state, multi_executor, memory_controller);
 
         Ok(Self { agent, event_tx })
     }
@@ -151,7 +182,7 @@ impl AgentManager {
         use mentalist::agent::AgentStepEvent;
         use futures_util::StreamExt;
         
-        let mut stream = Box::pin(self.agent.step_stream(input));
+        let mut stream = Box::pin(self.agent.step_stream(input, mentalist::agent::StepConfig::default()));
         while let Some(res) = stream.next().await {
             match res? {
                 AgentStepEvent::TextChunk(c) => {
@@ -257,9 +288,12 @@ impl AgentManager {
             "/summarize" => {
                 let _ = self.event_tx.send(AgentEvent::Status("Optimizing context...".into()));
                 let before = self.agent.state.context.items.len();
-                if let Err(e) = self.agent.harness.optimize_context(&mut self.agent.state.context).await {
+                
+                let mut current_ctx = (*self.agent.state.context).clone();
+                if let Err(e) = self.agent.harness.optimize_context(&mut current_ctx).await {
                     let _ = self.event_tx.send(AgentEvent::Error(format!("Summarization failed: {}", e)));
                 } else {
+                    self.agent.state.context = Arc::new(current_ctx);
                     let after = self.agent.state.context.items.len();
                     let _ = self.event_tx.send(AgentEvent::TextChunk(format!("Context optimized: {} -> {} items.\n", before, after)));
                 }

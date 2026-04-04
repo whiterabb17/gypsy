@@ -366,7 +366,7 @@ dependencies = [
 
 [[package]]
 name = "brain"
-version = "0.2.0"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "mem-bridge",
@@ -1468,7 +1468,7 @@ dependencies = [
 
 [[package]]
 name = "gypsy"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1489,6 +1489,7 @@ dependencies = [
  "reqwest 0.11.27",
  "serde",
  "serde_json",
+ "shlex",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -2262,7 +2263,7 @@ checksum = "4facc753ae494aeb6e3c22f839b158aebd4f9270f55cd3c79906c45476c47ab4"
 
 [[package]]
 name = "mem-bridge"
-version = "0.2.0"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2291,7 +2292,7 @@ dependencies = [
 
 [[package]]
 name = "mem-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2316,7 +2317,7 @@ dependencies = [
 
 [[package]]
 name = "mem-dreamer"
-version = "0.2.0"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2332,7 +2333,7 @@ dependencies = [
 
 [[package]]
 name = "mem-extractor"
-version = "0.2.0"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2409,7 +2410,7 @@ dependencies = [
 
 [[package]]
 name = "mem-session"
-version = "0.2.0"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2448,7 +2449,7 @@ dependencies = [
 
 [[package]]
 name = "mentalist"
-version = "0.2.0"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "async-recursion",
@@ -2472,6 +2473,7 @@ dependencies = [
  "ruvector-core",
  "serde",
  "serde_json",
+ "serde_yaml",
  "shlex",
  "thiserror 1.0.69",
  "tokio",
@@ -3965,6 +3967,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_yaml"
+version = "0.9.34+deprecated"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
+dependencies = [
+ "indexmap 2.13.1",
+ "itoa",
+ "ryu",
+ "serde",
+ "unsafe-libyaml",
+]
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4720,6 +4735,12 @@ dependencies = [
  "crypto-common",
  "subtle",
 ]
+
+[[package]]
+name = "unsafe-libyaml"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "untrusted"

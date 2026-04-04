@@ -1,4 +1,5 @@
 use gypsy::agent_manager::AgentManager;
+use mentalist::DeepAgentState;
 use gypsy::config::AppConfig;
 use mem_core::{EmbeddingProvider, TokenCounter, Response, ResponseChunk, ModelProvider, Request};
 use async_trait::async_trait;
@@ -66,7 +67,7 @@ async fn test_agent_manager_session_persistence() {
     let mut config = AppConfig::from_env();
     config.session_id = session_id.clone();
     
-    let mut manager = AgentManager::new(
+    let manager = AgentManager::new(
         tx.clone(),
         Box::new(MockProvider),
         Arc::new(MockEmbed),
@@ -75,12 +76,20 @@ async fn test_agent_manager_session_persistence() {
     ).unwrap();
     
     // 2. Modify state (add context item)
-    manager.agent.state.context.items.push(mem_core::MemoryItem {
+    let mut current_ctx = (*manager.agent.state.context).clone();
+    current_ctx.items.push(mem_core::MemoryItem {
         role: mem_core::MemoryRole::User,
         content: "Save me".into(),
         timestamp: 12345,
         metadata: serde_json::json!({}),
     });
+    // Arc is immutable, we must replace it
+    // Note: In real scenarios, deep_agent handles this via its own logic, 
+    // but here we are manually touching the state.
+    unsafe {
+        let ptr = &manager.agent.state as *const DeepAgentState as *mut DeepAgentState;
+        (*ptr).context = Arc::new(current_ctx);
+    }
     
     // 3. Force save
     let state_file = storage_dir.join(format!("session_{}.json", session_id));

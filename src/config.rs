@@ -35,6 +35,10 @@ pub struct AppConfig {
     pub storage_path: String,
     pub vault_path: Option<String>,
     pub session_id: String,
+
+    // Tools
+    pub mcp_servers: std::collections::HashMap<String, String>,
+    pub skills_path: String,
 }
 
 impl AppConfig {
@@ -88,6 +92,13 @@ impl AppConfig {
                 let now = chrono::Utc::now();
                 format!("gypsy_{}", now.format("%Y%m%d_%H%M%S"))
             }),
+
+            // MCP Servers from env (format: MCP_SERVER_NAME=command args)
+            mcp_servers: std::env::vars()
+                .filter(|(k, _)| k.starts_with("MCP_SERVER_"))
+                .map(|(k, v)| (k.trim_start_matches("MCP_SERVER_").to_lowercase(), v))
+                .collect(),
+            skills_path: std::env::var("SKILLS_PATH").unwrap_or_else(|_| ".agent/skills".to_string()),
         }
     }
 
