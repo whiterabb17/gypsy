@@ -1468,7 +1468,7 @@ dependencies = [
 
 [[package]]
 name = "gypsy"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2449,7 +2449,7 @@ dependencies = [
 
 [[package]]
 name = "mentalist"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "anyhow",
  "async-recursion",

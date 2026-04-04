@@ -33,6 +33,8 @@ pub struct MonitoringMiddleware {
 
 #[async_trait]
 impl Middleware for MonitoringMiddleware {
+    fn name(&self) -> &str { "Monitoring" }
+
     async fn before_ai_call(&self, req: &mut Request) -> Result<()> {
         let tokens: usize = req.context.items.iter().map(|i| self.token_counter.count_tokens(&i.content)).sum();
         let _ = self.tx.send(AgentEvent::MetricUpdate {
@@ -102,6 +104,7 @@ impl AgentManager {
         };
 
         let mut harness = Harness::new(provider);
+        harness.add_middleware(Arc::new(mentalist::middleware::LoggingMiddleware));
         harness.add_middleware(Arc::new(mp_middleware));
         harness.add_middleware(Arc::new(monitoring));
 
