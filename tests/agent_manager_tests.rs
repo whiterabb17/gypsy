@@ -19,13 +19,6 @@ impl mem_core::LlmClient for MockProvider {
 }
 
 #[async_trait]
-impl mem_core::LlmClient for MockProvider {
-    async fn completion(&self, _prompt: &str) -> anyhow::Result<String> {
-        Ok("Mock Completion".into())
-    }
-}
-
-#[async_trait]
 impl ModelProvider for MockProvider {
     async fn complete(&self, _req: Request) -> anyhow::Result<Response> {
         Ok(Response { content: "Mocked Response".into(), tool_calls: vec![] })
