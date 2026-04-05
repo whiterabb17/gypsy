@@ -45,6 +45,8 @@ pub struct AppConfig {
     pub skills_path: String,
     pub log_level: String,
     pub model_context_window: usize,
+    pub personality_instructions: Option<String>,
+    pub system_prompt: Option<String>,
 }
 
 impl AppConfig {
@@ -118,6 +120,8 @@ impl AppConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(2048),
+            personality_instructions: std::env::var("GYPSY_PERSONALITY").ok(),
+            system_prompt: std::env::var("GYPSY_SYSTEM_PROMPT").ok(),
         }
     }
 

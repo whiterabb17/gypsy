@@ -78,6 +78,8 @@ async fn test_agent_manager_session_persistence() {
     
     let mut config = AppConfig::from_env();
     config.session_id = session_id.clone();
+    config.personality_instructions = None;
+    config.system_prompt = None;
     
     let mut manager = AgentManager::new(
         tx.clone(),

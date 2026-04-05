@@ -278,6 +278,32 @@ impl AgentManager {
             }
         };
 
+        let mut state = state;
+        let mut current_ctx = (*state.context).clone();
+        
+        if let Some(prompt) = &config.system_prompt {
+            if !current_ctx.items.iter().any(|i| i.role == MemoryRole::System && i.content.contains(prompt)) {
+                current_ctx.items.insert(0, MemoryItem {
+                    role: MemoryRole::System,
+                    content: prompt.clone(),
+                    timestamp: chrono::Utc::now().timestamp() as u64,
+                    metadata: serde_json::json!({ "type": "system_prompt" }),
+                });
+            }
+        }
+
+        if let Some(personality) = &config.personality_instructions {
+             if !current_ctx.items.iter().any(|i| i.role == MemoryRole::System && i.content.contains(personality)) {
+                current_ctx.items.push(MemoryItem {
+                    role: MemoryRole::System,
+                    content: personality.clone(),
+                    timestamp: chrono::Utc::now().timestamp() as u64,
+                    metadata: serde_json::json!({ "type": "personality" }),
+                });
+            }
+        }
+        state.context = Arc::new(current_ctx);
+
         let scheduler = mp_middleware.dreamer.as_ref().map(|d| {
             let mut s = mem_dreamer::DreamScheduler::new(d.clone());
             s.start();
