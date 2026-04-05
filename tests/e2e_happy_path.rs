@@ -14,6 +14,20 @@ struct HappyModel {
 }
 
 #[async_trait]
+impl mem_core::LlmClient for HappyModel {
+    async fn completion(&self, _prompt: &str) -> anyhow::Result<String> {
+        Ok("Happy Completion".into())
+    }
+}
+
+#[async_trait]
+impl mem_core::LlmClient for HappyModel {
+    async fn completion(&self, _prompt: &str) -> anyhow::Result<String> {
+        Ok("Happy Completion".into())
+    }
+}
+
+#[async_trait]
 impl ModelProvider for HappyModel {
     async fn complete(&self, _req: Request) -> anyhow::Result<Response> {
         let mut count = self.call_count.lock().await;

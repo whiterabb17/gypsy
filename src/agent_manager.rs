@@ -15,7 +15,7 @@ use crate::command_parser::{CommandParser, ToolArgumentParser};
 use crate::context_consumer::ContextConsumer;
 use std::path::PathBuf;
 use std::time::Duration;
-use brain::Brain;
+
 use shlex;
 use chrono;
 use futures_util::StreamExt;
