@@ -43,6 +43,8 @@ pub struct AppConfig {
     pub mcp_filesystem_paths: Vec<String>,
     pub firecrawl_api_key: Option<String>,
     pub skills_path: String,
+    pub log_level: String,
+    pub model_context_window: usize,
 }
 
 impl AppConfig {
@@ -111,6 +113,11 @@ impl AppConfig {
             mcp_filesystem_paths,
             firecrawl_api_key: std::env::var("FIRECRAWL_API_KEY").ok(),
             skills_path: std::env::var("SKILLS_PATH").unwrap_or_else(|_| ".agent/skills".to_string()),
+            log_level: std::env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
+            model_context_window: std::env::var("MODEL_CONTEXT_WINDOW")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(2048),
         }
     }
 

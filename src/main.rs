@@ -75,6 +75,8 @@ async fn ensure_ollama_ready(config: &AppConfig) -> Result<()> {
 }
 
 async fn start_ollama_daemon() -> Result<()> {
+    use std::process::Stdio;
+
     #[cfg(target_os = "macos")]
     {
         let paths = [
@@ -88,6 +90,9 @@ async fn start_ollama_daemon() -> Result<()> {
                 if path.contains("Resources") || path.contains("bin") {
                     cmd.arg("serve");
                 }
+                cmd.stdout(Stdio::null());
+                cmd.stderr(Stdio::null());
+
                 if let Ok(child) = cmd.spawn() {
                     if let Ok(mut guard) = OLLAMA_CHILD.lock() {
                         *guard = Some(child);
@@ -100,10 +105,22 @@ async fn start_ollama_daemon() -> Result<()> {
 
     #[cfg(target_os = "windows")]
     {
+        // Try to kill orphans that might be leaking logs into our terminal
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/IM", "ollama.exe"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+
         let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_default();
         let path = format!("{}\\Ollama\\ollama.exe", local_app_data);
         if std::path::Path::new(&path).exists() {
-            if let Ok(child) = tokio::process::Command::new(path).arg("serve").spawn() {
+            let child = tokio::process::Command::new(path)
+                .arg("serve")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn();
+            if let Ok(child) = child {
                 if let Ok(mut guard) = OLLAMA_CHILD.lock() {
                     *guard = Some(child);
                 }
@@ -113,7 +130,12 @@ async fn start_ollama_daemon() -> Result<()> {
     }
 
     // Generic Linux/PATH fallback
-    if let Ok(child) = tokio::process::Command::new("ollama").arg("serve").spawn() {
+    let child = tokio::process::Command::new("ollama")
+        .arg("serve")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    if let Ok(child) = child {
         if let Ok(mut guard) = OLLAMA_CHILD.lock() {
             *guard = Some(child);
         }
@@ -169,7 +191,8 @@ fn create_providers(config: &AppConfig) -> Result<ProviderStack> {
         _ => {
             let m = config.model_name.clone();
             let e = config.embedding_model.clone();
-            let provider = Arc::new(mem_core::OllamaProvider::new(m, e));
+            let ctx = Some(config.model_context_window as u32);
+            let provider = Arc::new(mem_core::OllamaProvider::new(m, e, ctx));
             (
                 provider.clone() as Arc<dyn mentalist::ModelProvider>,
                 provider.clone() as Arc<dyn mem_core::EmbeddingProvider>,
@@ -247,7 +270,13 @@ async fn main() -> Result<()> {
 
     // 1. Setup Logging (Redirect tracing to MPSC)
     let (log_tx, mut log_rx) = mpsc::channel::<LogEntry>(5000);
+    let log_level = std::env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
+    let filter = tracing_subscriber::EnvFilter::builder()
+        .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
+        .parse_lossy(log_level);
+
     tracing_subscriber::registry()
+        .with(filter)
         .with(UiLogLayer { tx: log_tx })
         .init();
 
@@ -273,8 +302,8 @@ async fn main() -> Result<()> {
 
     let mut state = AppState::new();
     state.available_commands = manager.get_available_commands().await?;
-    state.log.push(LogEntry::Info(
-        "Gypsy Shell Initialized.🔮 Ready for input.".into(),
+    state.log.push(LogEntry::Gypsy(
+        "Gypsy agent is ready. Session initialized and secured. 🔮".into(),
     ));
 
     // 4. Input & Agent Loop

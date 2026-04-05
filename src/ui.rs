@@ -167,22 +167,35 @@ pub fn ui(f: &mut Frame, state: &AppState) {
     f.render_widget(input, left_chunks[1]);
 
     // Right Column: Dashboard
+    let right_constraints = if state.show_debug {
+        vec![
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(5), // Log panel takes middle space
+            Constraint::Length(5),
+        ]
+    } else {
+        vec![
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(0), // Help Area will expand
+            Constraint::Length(5),
+        ]
+    };
+
     let right_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Min(0),
-            Constraint::Length(5),
-        ])
+        .constraints(right_constraints)
         .split(chunks[1]);
 
     let status_style = if state.is_thinking {
-        ratatui::style::Style::default().fg(ratatui::style::Color::Yellow)
+        Style::default().fg(Color::Yellow)
     } else {
-        ratatui::style::Style::default()
+        Style::default()
     };
 
     let status_para = Paragraph::new(state.status.as_str())
@@ -202,45 +215,48 @@ pub fn ui(f: &mut Frame, state: &AppState) {
         .block(Block::default().borders(Borders::ALL).title("Context Items Count"));
     f.render_widget(context_para, right_chunks[3]);
 
-    // Render Under-the-Hood Logs
-    let mut system_text = Text::default();
-    for entry in system_log {
-        let line = match entry {
-            LogEntry::Warn(msg) => Line::from(vec![
-                Span::styled("WARN:  ", Style::default().fg(Color::Yellow)),
-                Span::raw(msg),
-            ]),
-            LogEntry::Debug(msg) => Line::from(vec![
-                Span::styled("DEBUG: ", Style::default().fg(Color::DarkGray)),
-                Span::raw(msg),
-            ]),
-            LogEntry::Trace(msg) => Line::from(vec![
-                Span::styled("TRACE: ", Style::default().fg(Color::Gray)),
-                Span::raw(msg),
-            ]),
-            LogEntry::Info(msg) => Line::from(vec![
-                Span::styled("INFO:  ", Style::default().fg(Color::White)),
-                Span::raw(msg),
-            ]),
-            _ => continue,
+    if state.show_debug {
+        // Render Under-the-Hood Logs
+        let mut system_text = Text::default();
+        for entry in system_log {
+            let line = match entry {
+                LogEntry::Warn(msg) => Line::from(vec![
+                    Span::styled("WARN:  ", Style::default().fg(Color::Yellow)),
+                    Span::raw(msg),
+                ]),
+                LogEntry::Debug(msg) => Line::from(vec![
+                    Span::styled("DEBUG: ", Style::default().fg(Color::DarkGray)),
+                    Span::raw(msg),
+                ]),
+                LogEntry::Trace(msg) => Line::from(vec![
+                    Span::styled("TRACE: ", Style::default().fg(Color::Gray)),
+                    Span::raw(msg),
+                ]),
+                LogEntry::Info(msg) => Line::from(vec![
+                    Span::styled("INFO:  ", Style::default().fg(Color::White)),
+                    Span::raw(msg),
+                ]),
+                _ => continue,
+            };
+            system_text.lines.push(line);
+        }
+
+        let system_title = if state.system_log_scroll > 0 {
+            format!("Under-the-Hood [Scroll: {}] [DEBUG ON]", state.system_log_scroll)
+        } else {
+            "Under-the-Hood [DEBUG ON]".to_string()
         };
-        system_text.lines.push(line);
+
+        let system_paragraph = Paragraph::new(system_text)
+            .block(Block::default().borders(Borders::ALL).title(system_title))
+            .wrap(Wrap { trim: true })
+            .scroll((state.system_log_scroll, 0));
+        
+        f.render_widget(system_paragraph, right_chunks[4]);
     }
 
-    let system_title = if state.system_log_scroll > 0 {
-        format!("Under-the-Hood [Scroll: {}]{}", state.system_log_scroll, if state.show_debug { " [DEBUG ON]" } else { "" })
-    } else {
-        format!("Under-the-Hood{}", if state.show_debug { " [DEBUG ON]" } else { "" })
-    };
-
-    let system_paragraph = Paragraph::new(system_text)
-        .block(Block::default().borders(Borders::ALL).title(system_title))
-        .wrap(Wrap { trim: true })
-        .scroll((state.system_log_scroll, 0));
-    
-    f.render_widget(system_paragraph, right_chunks[4]);
-
-    let help_area = right_chunks[5];
+    // Help Area (Always the bottom-most chunk)
+    let help_area = *right_chunks.last().unwrap();
     let help_columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
@@ -248,21 +264,50 @@ pub fn ui(f: &mut Frame, state: &AppState) {
 
     let (left_help, right_help) = if state.input_buffer.starts_with('/') {
         (
-            "Esc: Quit\nEnter: Submit",
-            "Tab: Complete"
+            Line::from(vec![
+                Span::styled("Enter: ", Style::default().fg(Color::DarkGray)),
+                Span::raw("Select"),
+            ]),
+            Line::from(vec![
+                Span::styled("Tab: ", Style::default().fg(Color::DarkGray)),
+                Span::raw("Complete"),
+            ]),
         )
     } else {
         (
-            "Esc: Quit\nEnter: Submit\nF1: Debug",
-            "PgUp: Up\nPgDn: Down"
+            Line::from(vec![
+                Span::styled("Esc: ", Style::default().fg(Color::DarkGray)),
+                Span::raw("Quit"),
+            ]),
+            Line::from(vec![
+                Span::styled("PgUp: ", Style::default().fg(Color::DarkGray)),
+                Span::raw("Up"),
+            ]),
         )
     };
 
-    let help_left = Paragraph::new(left_help)
-        .block(Block::default().borders(Borders::LEFT | Borders::TOP | Borders::BOTTOM).title("Quick Help"));
-    let help_right = Paragraph::new(right_help)
-        .block(Block::default().borders(Borders::RIGHT | Borders::TOP | Borders::BOTTOM));
-    
-    f.render_widget(help_left, help_columns[0]);
-    f.render_widget(help_right, help_columns[1]);
+    let help_para_left = Paragraph::new(Text::from(vec![
+        left_help,
+        Line::from(vec![
+            Span::styled("Enter: ", Style::default().fg(Color::DarkGray)),
+            Span::raw("Submit"),
+        ]),
+        Line::from(vec![
+            Span::styled("F1: ", Style::default().fg(Color::DarkGray)),
+            Span::raw("Debug"),
+        ]),
+    ]))
+    .block(Block::default().borders(Borders::ALL).title("Quick Help"));
+
+    let help_para_right = Paragraph::new(Text::from(vec![
+        right_help,
+        Line::from(vec![
+            Span::styled("PgDn: ", Style::default().fg(Color::DarkGray)),
+            Span::raw("Down"),
+        ]),
+    ]))
+    .block(Block::default().borders(Borders::ALL).title(""));
+
+    f.render_widget(help_para_left, help_columns[0]);
+    f.render_widget(help_para_right, help_columns[1]);
 }

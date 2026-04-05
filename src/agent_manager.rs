@@ -113,6 +113,7 @@ pub struct AgentManager {
     pub agent: DeepAgent,
     pub event_tx: mpsc::Sender<AgentEvent>,
     pub context_consumer: ContextConsumer,
+    pub config: AppConfig,
 }
 
 impl AgentManager {
@@ -164,7 +165,7 @@ impl AgentManager {
                 cpu_quota: Some((config.cpu_limit_percent * 1000) as i64),
             },
             "wasm" => ExecutionMode::Wasm {
-                module_path: config.wasm_module_path.map(PathBuf::from),
+                module_path: config.wasm_module_path.clone().map(PathBuf::from),
                 mount_root: true,
                 env_vars: config.wasm_env_vars.clone(),
             },
@@ -275,7 +276,12 @@ impl AgentManager {
         };
 
         let agent = DeepAgent::new(harness, state, multi_executor, memory_controller);
-        Ok(Self { agent, event_tx, context_consumer: ContextConsumer::new() })
+        Ok(Self {
+            agent,
+            event_tx,
+            context_consumer: ContextConsumer::new(),
+            config,
+        })
     }
 
     pub async fn get_available_commands(&self) -> Result<Vec<String>> {
@@ -399,8 +405,7 @@ impl AgentManager {
                         let new_id = parts[1];
                         let _ = self.event_tx.try_send(AgentEvent::Status(format!("Switching to {}...", new_id)));
                         
-                        // Fallback to default sessions path
-                        let sessions_path = ".agent/sessions".to_string();
+                        let sessions_path = self.config.sessions_path.clone();
                         
                         let session_file = format!("session_{}.json", new_id);
                         let mut state_path = PathBuf::from(&sessions_path).join(&session_file);
@@ -571,9 +576,7 @@ impl AgentManager {
     }
 
     fn save_current_session(&self) -> Result<()> {
-        // This is a bit hacky because we don't store the sessions_path in the struct yet.
-        // But we can derive it from current_dir or just use the default.
-        let path = PathBuf::from(".agent/sessions").join(format!("session_{}.json", self.agent.state.session_id));
+        let path = PathBuf::from(&self.config.sessions_path).join(format!("session_{}.json", self.agent.state.session_id));
         self.save_session(path)
     }
 }

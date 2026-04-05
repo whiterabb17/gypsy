@@ -83,23 +83,63 @@ Gypsy isn't just a chatbot—it's an operational workbench. Use these internal c
 
 ---
 
-## 🏛️ Architecture
+## 🏗️ Architecture: The DeepAgent Engine
 
-Gypsy follows the **DeepAgent** methodology: **Agent = Model + Harness + Memory**.
+Gypsy follows a strictly tiered **DeepAgent** methodology, where the agent is defined as:  
+`Agent = Unified Model + Secure Harness + Multi-Layered Memory`.
 
-- **Model**: Unified provider support (Ollama, Anthropic, etc.).
-- **Harness**: [**Mentalist**](https://github.com/whiterabb17/mentalist) provides the secure execution loop and safety gates.
-- **Memory**: [**MindPalace**](https://github.com/whiterabb17/mindpalace) manages the 7-layer context optimization and long-term knowledge base.
+### 1. Unified Provider Engine (Shared)
+To ensure maximum resource efficiency, Gypsy deduplicates model provider instances. Whether the agent is reasoning, extracting facts, or calculating embeddings, it uses a shared, thread-safe `Arc`-wrapped provider engine.
+- **Supported Providers**: Ollama (Local), Anthropic (Claude), OpenAI (GPT-4), Gemini (Pro/Ultra).
+- **Auto-Lifecycle**: For Ollama, Gypsy automatically manages daemon startup, model pulling, and health-check monitoring with a 5s fail-safe timeout.
+
+### 2. The 7-Layer Memory System (MindPalace)
+Gypsy doesn't just "remember" text; it optimizes context using a 7-layer hierarchy inspired by high-stakes cognitive architectures:
+- **L1-L3 (Cache/Working)**: Immediate conversation window.
+- **L4-L6 (Summarized/Reflective)**: Heuristic-based compaction of older turns to preserve "intent" without token bloat.
+- **L7 (Deep Knowledge)**: RAG-enabled retrieval from the `FileStorage` backend.
+
+### 3. Session Lifecycle & Persistence
+Gypsy treats every interaction as a durable mission. 
+- **Versioning**: All sessions use standard `v1` JSON versioning to support seamless future migrations.
+- **Atomic Persistence**: State is saved using a "Write-Temp-then-Rename" pattern to ensure a crash never corrupts your history.
+- **Migration**: Gypsy automatically detects legacy `.session` files and migrates them to the new `.json` versioned standard on first load.
+
+---
+
+## 🛡️ Operational Hardening & Safety
+
+Gypsy is designed to be "safe by default" for developers working in sensitive environments.
+
+- **Staging Vault**: Any tool that attempts to modify your filesystem works in a **Vault** sub-directory first. You review the changes before they are synced to your root.
+- **Resource Guardrails**: Built-in limits for tool execution (e.g., 4GB RAM ceiling, 32-argument command ceiling) prevent runaway processes.
+- **Sandboxed Execution**: Choose between `local` (trusted) or `wasm` (isolated) execution modes for untrusted scripts.
+
+---
+
+## ⚙️ Advanced Configuration
+
+Configure Gypsy via `.env` or system environment variables:
+
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `PROVIDER` | LLM backend (`ollama`, `openai`, etc.) | `ollama` |
+| `MODEL_NAME` | The specific model ID to use | `llama3` |
+| `SESSIONS_PATH` | Directory for saved agent states | `.agent/sessions` |
+| `STORAGE_PATH` | Root for long-term vector/fact storage | `.agent/storage` |
+| `VAULT_PATH` | Staging area for file modifications | `.agent/vault` |
+| `OLLAMA_BASE_URL` | Endpoint for Ollama API | `http://localhost:11434` |
+| `LOG_LEVEL` | Logging verbosity (`info`, `debug`, `trace`) | `info` |
 
 ---
 
 ## 🤝 Repositories in the Ecosystem
 
-- **[Mentalist](https://github.com/whiterabb17/mentalist)**: High-performance agent harness and executor tools.
-- **[MindPalace](https://github.com/whiterabb17/mindpalace)**: State-of-the-art context optimization and memory retrieval inspired by the claude memory layers.
+- **[Mentalist](https://github.com/whiterabb17/mentalist)**: The high-performance agent harness and secure executor engine.
+- **[MindPalace](https://github.com/whiterabb17/mindpalace)**: The SOTA context optimization and memory retrieval library.
 
 ---
 
 ## 📝 License
 
-Gypsy is released under the MIT License. Built with ❤️ by [whiterabb17](https://github.com/whiterabb17).
+Gypsy is released under the MIT License. Built with ❤️ for the open-source community by [whiterabb17](https://github.com/whiterabb17).
