@@ -22,9 +22,15 @@ impl ModelProvider for MockProvider {
             content_delta: Some("Chunk1".into()),
             tool_call_delta: None,
             usage: None,
+            is_final: false,
+        };
+        let final_chunk = ResponseChunk {
+            content_delta: None,
+            tool_call_delta: None,
+            usage: None,
             is_final: true,
         };
-        Ok(Box::pin(stream::iter(vec![Ok(chunk)])))
+        Ok(Box::pin(stream::iter(vec![Ok(chunk), Ok(final_chunk)])))
     }
 }
 
@@ -41,7 +47,7 @@ impl TokenCounter for MockCounter {
 
 #[tokio::test]
 async fn test_agent_manager_init() {
-    let (tx, _rx) = mpsc::unbounded_channel();
+    let (tx, _rx) = mpsc::channel(100);
     let config = AppConfig::from_env();
     
     let manager = AgentManager::new(
@@ -50,14 +56,14 @@ async fn test_agent_manager_init() {
         Arc::new(MockEmbed),
         Arc::new(MockCounter),
         config
-    );
+    ).await;
     
     assert!(manager.is_ok());
 }
 
 #[tokio::test]
 async fn test_agent_manager_session_persistence() {
-    let (tx, _rx) = mpsc::unbounded_channel();
+    let (tx, _rx) = mpsc::channel(100);
     let session_id = "test_persistence_001".to_string();
     
     // 1. Create agent and ensure session dir exists
@@ -67,28 +73,23 @@ async fn test_agent_manager_session_persistence() {
     let mut config = AppConfig::from_env();
     config.session_id = session_id.clone();
     
-    let manager = AgentManager::new(
+    let mut manager = AgentManager::new(
         tx.clone(),
         Box::new(MockProvider),
         Arc::new(MockEmbed),
         Arc::new(MockCounter),
         config.clone()
-    ).unwrap();
+    ).await.unwrap();
     
     // 2. Modify state (add context item)
-    let mut current_ctx = (*manager.agent.state.context).clone();
-    current_ctx.items.push(mem_core::MemoryItem {
-        role: mem_core::MemoryRole::User,
-        content: "Save me".into(),
-        timestamp: 12345,
-        metadata: serde_json::json!({}),
-    });
-    // Arc is immutable, we must replace it
-    // Note: In real scenarios, deep_agent handles this via its own logic, 
-    // but here we are manually touching the state.
-    unsafe {
-        let ptr = &manager.agent.state as *const DeepAgentState as *mut DeepAgentState;
-        (*ptr).context = Arc::new(current_ctx);
+    {
+        let context = Arc::make_mut(&mut manager.agent.state.context);
+        context.items.push(mem_core::MemoryItem {
+            role: mem_core::MemoryRole::User,
+            content: "Save me".into(),
+            timestamp: 12345,
+            metadata: serde_json::json!({}),
+        });
     }
     
     // 3. Force save
@@ -103,7 +104,7 @@ async fn test_agent_manager_session_persistence() {
         Arc::new(MockEmbed),
         Arc::new(MockCounter),
         config
-    ).unwrap();
+    ).await.unwrap();
     
     assert_eq!(manager2.agent.state.context.items.len(), 1);
     assert_eq!(manager2.agent.state.context.items[0].content, "Save me");

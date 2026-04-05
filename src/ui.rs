@@ -3,7 +3,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
     Frame,
 };
-// use std::time::Duration;
+use ringbuffer::{AllocRingBuffer, RingBuffer};
 
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
@@ -20,7 +20,7 @@ pub enum LogEntry {
 }
 
 pub struct AppState {
-    pub log: Vec<LogEntry>,
+    pub log: AllocRingBuffer<LogEntry>,
     pub tokens: usize,
     pub context_size: usize,
     pub current_step: String,
@@ -42,7 +42,7 @@ impl AppState {
         Self {
             status: "Idle".to_string(),
             current_step: "Waiting for input".to_string(),
-            log: Vec::new(),
+            log: AllocRingBuffer::new(1000),
             tokens: 0,
             context_size: 0,
             input_buffer: String::new(),
@@ -70,17 +70,16 @@ pub fn ui(f: &mut Frame, state: &AppState) {
         .split(chunks[0]);
 
     // 1. Interaction (Chat) Logs
-    let chat_log: Vec<&LogEntry> = state.log.iter()
+    let chat_log = state.log.iter()
         .filter(|e| {
             match e {
                 LogEntry::User(_) | LogEntry::Gypsy(_) | LogEntry::Error(_) => true,
                 _ => false
             }
-        })
-        .collect();
+        });
 
     // 2. Systems (Under-the-Hood) Logs
-    let system_log: Vec<&LogEntry> = state.log.iter()
+    let system_log = state.log.iter()
         .filter(|e| {
             match e {
                 LogEntry::Debug(_) | LogEntry::Trace(_) => state.show_debug,
@@ -90,8 +89,7 @@ pub fn ui(f: &mut Frame, state: &AppState) {
                 },
                 _ => false
             }
-        })
-        .collect();
+        });
 
     let mut chat_text = Text::default();
     for entry in chat_log {
@@ -108,7 +106,7 @@ pub fn ui(f: &mut Frame, state: &AppState) {
                 Span::styled("ERROR: ", Style::default().fg(Color::Red)),
                 Span::raw(msg),
             ]),
-            _ => continue,
+            _ => unreachable!("Chat log should only contain User/Gypsy/Error"),
         };
         chat_text.lines.push(line);
     }

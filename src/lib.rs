@@ -1,3 +1,6 @@
 pub mod agent_manager;
 pub mod config;
 pub mod ui;
+pub mod error;
+pub mod command_parser;
+pub mod context_consumer;

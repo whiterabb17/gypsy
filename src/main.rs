@@ -14,6 +14,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use std::sync::Mutex;
+use ringbuffer::RingBuffer;
+
+static OLLAMA_CHILD: once_cell::sync::Lazy<Arc<Mutex<Option<tokio::process::Child>>>> =
+    once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(None)));
 
 // --- Ollama Management ---
 
@@ -77,12 +82,14 @@ async fn start_ollama_daemon() -> Result<()> {
         ];
         for path in paths {
             if std::path::Path::new(path).exists() {
-                // The MacOS/ollama path might be the app wrapper, so we try without args there or handle it
                 let mut cmd = tokio::process::Command::new(path);
                 if path.contains("Resources") || path.contains("bin") {
                     cmd.arg("serve");
                 }
-                if cmd.spawn().is_ok() {
+                if let Ok(child) = cmd.spawn() {
+                    if let Ok(mut guard) = OLLAMA_CHILD.lock() {
+                        *guard = Some(child);
+                    }
                     return Ok(());
                 }
             }
@@ -94,15 +101,21 @@ async fn start_ollama_daemon() -> Result<()> {
         let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_default();
         let path = format!("{}\\Ollama\\ollama.exe", local_app_data);
         if std::path::Path::new(&path).exists() {
-            tokio::process::Command::new(path).arg("serve").spawn()?;
+            if let Ok(child) = tokio::process::Command::new(path).arg("serve").spawn() {
+                if let Ok(mut guard) = OLLAMA_CHILD.lock() {
+                    *guard = Some(child);
+                }
+            }
             return Ok(());
         }
     }
 
     // Generic Linux/PATH fallback
-    tokio::process::Command::new("ollama")
-        .arg("serve")
-        .spawn()?;
+    if let Ok(child) = tokio::process::Command::new("ollama").arg("serve").spawn() {
+        if let Ok(mut guard) = OLLAMA_CHILD.lock() {
+            *guard = Some(child);
+        }
+    }
 
     Ok(())
 }
@@ -116,76 +129,49 @@ struct ProviderStack {
 }
 
 fn create_providers(config: &AppConfig) -> Result<ProviderStack> {
-    match config.provider.to_lowercase().as_str() {
+    let (model, embeddings, token_counter): (
+        Box<dyn mentalist::ModelProvider>,
+        Arc<dyn mem_core::EmbeddingProvider>,
+        Arc<dyn mem_core::TokenCounter>,
+    ) = match config.provider.to_lowercase().as_str() {
         "anthropic" => {
-            let key = config
-                .anthropic_api_key
-                .as_ref()
-                .context("ANTHROPIC_API_KEY missing")?;
-            let provider = Arc::new(mem_core::AnthropicProvider::new(
-                key.clone(),
-                config.model_name.clone(),
-            ));
-            Ok(ProviderStack {
-                model: Box::new(mem_core::AnthropicProvider::new(
-                    key.clone(),
-                    config.model_name.clone(),
-                )),
-                embeddings: provider.clone(),
-                token_counter: provider,
-            })
+            let key = config.anthropic_api_key.as_ref().context("ANTHROPIC_API_KEY missing")?.clone();
+            let model = config.model_name.clone();
+            (
+                Box::new(mem_core::AnthropicProvider::new(key.clone(), model.clone())),
+                Arc::new(mem_core::AnthropicProvider::new(key.clone(), model.clone())) as Arc<dyn mem_core::EmbeddingProvider>,
+                Arc::new(mem_core::AnthropicProvider::new(key, model)) as Arc<dyn mem_core::TokenCounter>,
+            )
         }
         "openai" => {
-            let key = config
-                .openai_api_key
-                .as_ref()
-                .context("OPENAI_API_KEY missing")?;
-            let provider = Arc::new(mem_core::OpenAiProvider::new(
-                key.clone(),
-                config.model_name.clone(),
-            ));
-            Ok(ProviderStack {
-                model: Box::new(mem_core::OpenAiProvider::new(
-                    key.clone(),
-                    config.model_name.clone(),
-                )),
-                embeddings: provider.clone(),
-                token_counter: provider,
-            })
+            let key = config.openai_api_key.as_ref().context("OPENAI_API_KEY missing")?.clone();
+            let model = config.model_name.clone();
+            (
+                Box::new(mem_core::OpenAiProvider::new(key.clone(), model.clone())),
+                Arc::new(mem_core::OpenAiProvider::new(key.clone(), model.clone())) as Arc<dyn mem_core::EmbeddingProvider>,
+                Arc::new(mem_core::OpenAiProvider::new(key, model)) as Arc<dyn mem_core::TokenCounter>,
+            )
         }
         "gemini" => {
-            let key = config
-                .gemini_api_key
-                .as_ref()
-                .context("GEMINI_API_KEY missing")?;
-            let provider = Arc::new(mem_core::GeminiProvider::new(
-                key.clone(),
-                config.model_name.clone(),
-            ));
-            Ok(ProviderStack {
-                model: Box::new(mem_core::GeminiProvider::new(
-                    key.clone(),
-                    config.model_name.clone(),
-                )),
-                embeddings: provider.clone(),
-                token_counter: provider,
-            })
+            let key = config.gemini_api_key.as_ref().context("GEMINI_API_KEY missing")?.clone();
+            let model = config.model_name.clone();
+            (
+                Box::new(mem_core::GeminiProvider::new(key.clone(), model.clone())),
+                Arc::new(mem_core::GeminiProvider::new(key.clone(), model.clone())) as Arc<dyn mem_core::EmbeddingProvider>,
+                Arc::new(mem_core::GeminiProvider::new(key, model)) as Arc<dyn mem_core::TokenCounter>,
+            )
         }
         _ => {
-            let provider = Arc::new(mem_core::OllamaProvider::new(
-                config.model_name.clone(),
-                config.embedding_model.clone(),
-            ));
-            Ok(ProviderStack {
-                model: Box::new(mem_core::OllamaProvider::new(
-                    config.model_name.clone(),
-                    config.embedding_model.clone(),
-                )),
-                embeddings: provider.clone(),
-                token_counter: provider,
-            })
+            let m1 = config.model_name.clone();
+            let e1 = config.embedding_model.clone();
+            (
+                Box::new(mem_core::OllamaProvider::new(m1.clone(), e1.clone())),
+                Arc::new(mem_core::OllamaProvider::new(m1.clone(), e1.clone())) as Arc<dyn mem_core::EmbeddingProvider>,
+                Arc::new(mem_core::OllamaProvider::new(m1, e1)) as Arc<dyn mem_core::TokenCounter>,
+            )
         }
-    }
+    };
+    Ok(ProviderStack { model, embeddings, token_counter })
 }
 
 pub struct MockLlmClient;
@@ -211,7 +197,7 @@ impl tracing::field::Visit for LogVisitor {
 }
 
 struct UiLogLayer {
-    tx: mpsc::UnboundedSender<LogEntry>,
+    tx: mpsc::Sender<LogEntry>,
 }
 
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for UiLogLayer {
@@ -237,7 +223,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for UiLogLayer {
                 tracing::Level::DEBUG => LogEntry::Debug(msg),
                 tracing::Level::TRACE => LogEntry::Trace(msg),
             };
-            let _ = self.tx.send(entry);
+            let _ = self.tx.try_send(entry);
         }
     }
 }
@@ -252,7 +238,7 @@ async fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // 1. Setup Logging (Redirect tracing to MPSC)
-    let (log_tx, mut log_rx) = mpsc::unbounded_channel::<LogEntry>();
+    let (log_tx, mut log_rx) = mpsc::channel::<LogEntry>(5000);
     tracing_subscriber::registry()
         .with(UiLogLayer { tx: log_tx })
         .init();
@@ -267,7 +253,7 @@ async fn main() -> Result<()> {
     let providers = create_providers(&config)?;
 
     // 3. Setup Agent & Communication
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<AgentEvent>();
+    let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(1000);
 
     let mut manager = AgentManager::new(
         event_tx.clone(),
@@ -275,7 +261,7 @@ async fn main() -> Result<()> {
         providers.embeddings,
         providers.token_counter,
         config,
-    )?;
+    ).await?;
 
     let mut state = AppState::new();
     state.available_commands = manager.get_available_commands().await?;
@@ -284,7 +270,7 @@ async fn main() -> Result<()> {
     ));
 
     // 4. Input & Agent Loop
-    let (input_tx, mut input_rx) = mpsc::unbounded_channel::<String>();
+    let (input_tx, mut input_rx) = mpsc::channel::<String>(100);
 
     let event_tx_clone = event_tx.clone();
     tokio::spawn(async move {
@@ -314,11 +300,6 @@ async fn main() -> Result<()> {
         }
 
         if new_logs {
-            // Cap log size to 1000 to prevent 4GB memory crash
-            if state.log.len() > 1000 {
-                state.log.drain(0..state.log.len() - 1000);
-            }
-
             // Auto-scroll logic for chat (Interaction Log)
             if state.log_scroll >= chat_count.saturating_sub(5) as u16 {
                 state.log_scroll = chat_count as u16;
@@ -372,14 +353,18 @@ async fn main() -> Result<()> {
                             state.log_scroll = chat_count as u16; // Scroll to bottom
                             state.status = "Thinking...".to_string();
                             state.is_thinking = true;
-                            let _ = input_tx.send(input);
+                            if let Err(_) = input_tx.try_send(input) {
+                                state.log.push(LogEntry::Error("Input channel full".into()));
+                            }
                         }
                     }
                     KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
                         break;
                     }
                     KeyCode::Char(c) => {
-                        state.input_buffer.push(c);
+                        if state.input_buffer.len() < 4096 {
+                            state.input_buffer.push(c);
+                        }
                         if state.input_buffer.starts_with('/') {
                             state.autocomplete_suggestions = state
                                 .available_commands
@@ -422,18 +407,16 @@ async fn main() -> Result<()> {
                     state.status = s;
                 }
                 AgentEvent::TextChunk(c) => {
-                    if let Some(last) = state.log.last_mut() {
-                        if let LogEntry::Gypsy(ref mut msg) = last {
-                            msg.push_str(&c);
+                        if let Some(last_entry) = state.log.iter_mut().last() {
+                            if let LogEntry::Gypsy(ref mut msg) = last_entry {
+                                msg.push_str(&c);
+                            } else {
+                                state.log.push(LogEntry::Gypsy(c));
+                            }
                         } else {
                             state.log.push(LogEntry::Gypsy(c));
-                            // Only auto-scroll if we are near the bottom
                         }
-                    } else {
-                        state.log.push(LogEntry::Gypsy(c));
                     }
-                    // Ensure thinking stays true until Idle or Message is received
-                }
                 AgentEvent::MetricUpdate {
                     tokens,
                     context_size,
@@ -466,6 +449,13 @@ async fn main() -> Result<()> {
         DisableMouseCapture
     )?;
     terminal.show_cursor()?;
+
+    // Set cleanup logic
+    if let Ok(mut guard) = OLLAMA_CHILD.lock() {
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill();
+        }
+    }
 
     Ok(())
 }

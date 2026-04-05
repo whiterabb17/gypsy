@@ -1,19 +1,56 @@
 use std::sync::Arc;
-use tokio::sync::mpsc;
-use anyhow::Result;
+use tokio::sync::{mpsc, Mutex};
+use anyhow::{Context as _, Result};
 use mentalist::{Harness, DeepAgent, DeepAgentState, Request, Response, ToolCall, ModelProvider};
 use mentalist::executor::{ExecutionMode, MultiExecutor};
 use mentalist::mcp::McpExecutor;
 use mentalist::skills::SkillExecutor;
 use mentalist::middleware::{Middleware, MindPalaceMiddleware, ToolDiscoveryMiddleware};
-use mem_core::{Context, FileStorage, EmbeddingProvider, LlmClient, TokenCounter};
+use mem_core::{Context, FileStorage, EmbeddingProvider, LlmClient, TokenCounter, MemoryItem, MemoryRole};
 use mem_resilience::ResilientMemoryController;
 use async_trait::async_trait;
 use crate::config::AppConfig;
+use crate::error::GypsyResult;
+use crate::command_parser::{CommandParser, ToolArgumentParser};
+use crate::context_consumer::ContextConsumer;
 use std::path::PathBuf;
+use std::time::Duration;
 use brain::Brain;
 use shlex;
 use chrono;
+use futures_util::StreamExt;
+
+// --- Mocks & Utilities ---
+
+pub struct MockLlmClient {
+    pub responses: Vec<String>,
+    call_count: Arc<Mutex<usize>>,
+}
+
+impl MockLlmClient {
+    pub fn new(responses: Vec<String>) -> Self {
+        Self {
+            responses,
+            call_count: Arc::new(Mutex::new(0)),
+        }
+    }
+
+    pub async fn get_call_count(&self) -> usize {
+        *self.call_count.lock().await
+    }
+}
+
+#[async_trait]
+impl LlmClient for MockLlmClient {
+    async fn completion(&self, _prompt: &str) -> Result<String> {
+        let mut count = self.call_count.lock().await;
+        let response = self.responses.get(*count)
+            .cloned()
+            .unwrap_or_else(|| "[]".to_string());
+        *count += 1;
+        Ok(response)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
@@ -29,7 +66,7 @@ pub enum AgentEvent {
 }
 
 pub struct MonitoringMiddleware {
-    tx: mpsc::UnboundedSender<AgentEvent>,
+    tx: mpsc::Sender<AgentEvent>,
     token_counter: Arc<dyn TokenCounter>,
 }
 
@@ -39,23 +76,23 @@ impl Middleware for MonitoringMiddleware {
 
     async fn before_ai_call(&self, req: &mut Request) -> Result<()> {
         let tokens: usize = req.context.items.iter().map(|i| self.token_counter.count_tokens(&i.content)).sum();
-        let _ = self.tx.send(AgentEvent::MetricUpdate {
+        let _ = self.tx.try_send(AgentEvent::MetricUpdate {
             tokens,
             context_size: req.context.items.len(),
             step: "Thinking (LLM)".to_string(),
         });
-        let _ = self.tx.send(AgentEvent::Status("Thinking...".to_string()));
+        let _ = self.tx.try_send(AgentEvent::Status("Thinking...".to_string()));
         Ok(())
     }
 
     async fn after_ai_call(&self, _res: &mut Response) -> Result<()> {
-        let _ = self.tx.send(AgentEvent::Status("AI Responded".to_string()));
+        let _ = self.tx.try_send(AgentEvent::Status("AI Responded".to_string()));
         Ok(())
     }
 
     async fn before_tool_call(&self, tool: &mut ToolCall) -> Result<()> {
-        let _ = self.tx.send(AgentEvent::Status(format!("Executing Tool: {}", tool.name)));
-        let _ = self.tx.send(AgentEvent::MetricUpdate {
+        let _ = self.tx.try_send(AgentEvent::Status(format!("Executing Tool: {}", tool.name)));
+        let _ = self.tx.try_send(AgentEvent::MetricUpdate {
             tokens: 0,
             context_size: 0,
             step: format!("Tool: {}", tool.name),
@@ -66,12 +103,13 @@ impl Middleware for MonitoringMiddleware {
 
 pub struct AgentManager {
     pub agent: DeepAgent,
-    pub event_tx: mpsc::UnboundedSender<AgentEvent>,
+    pub event_tx: mpsc::Sender<AgentEvent>,
+    pub context_consumer: ContextConsumer,
 }
 
 impl AgentManager {
-    pub fn new(
-        event_tx: mpsc::UnboundedSender<AgentEvent>,
+    pub async fn new(
+        event_tx: mpsc::Sender<AgentEvent>,
         provider: Box<dyn ModelProvider>,
         embeddings: Arc<dyn EmbeddingProvider>,
         token_counter: Arc<dyn TokenCounter>,
@@ -85,7 +123,7 @@ impl AgentManager {
         
         let mut mp_middleware = MindPalaceMiddleware::hardened(
             storage.clone(),
-            Arc::new(MockLlmClient),
+            Arc::new(MockLlmClient::new(vec!["[]".to_string()])),
             embeddings.clone(),
             token_counter.clone(),
             session_id.clone(),
@@ -135,7 +173,6 @@ impl AgentManager {
         let mut multi_executor = MultiExecutor::new();
         multi_executor.add_executor(sandbox_executor);
 
-        // Add MCP servers from config
         for (_name, cmd_line) in &config.mcp_servers {
             let parts: Vec<String> = shlex::split(cmd_line)
                 .unwrap_or_default();
@@ -146,7 +183,6 @@ impl AgentManager {
             }
         }
 
-        // Add Built-in Filesystem MCP (Default to current dir if no paths provided)
         let fs_paths = if config.mcp_filesystem_paths.is_empty() {
             vec![".".to_string()]
         } else {
@@ -154,32 +190,61 @@ impl AgentManager {
         };
         multi_executor.add_executor(Arc::new(mentalist::mcp::BuiltinMcp::filesystem(fs_paths)));
 
-        // Add Built-in Firecrawl MCP (if API key provided)
         if let Some(ref api_key) = config.firecrawl_api_key {
             multi_executor.add_executor(Arc::new(mentalist::mcp::BuiltinMcp::firecrawl(api_key.clone())));
         }
 
-        // Add Skills from config
         let skills_path = PathBuf::from(&config.skills_path);
-        let skill_executor = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                SkillExecutor::new(skills_path).await
-            })
-        })?;
+        let skill_executor = tokio::select! {
+            res = SkillExecutor::new(skills_path.clone()) => match res {
+                Ok(e) => e,
+                Err(err) => {
+                    tracing::warn!("Skill executor failed to load from {:?}: {}. Using empty.", skills_path, err);
+                    SkillExecutor { skills_root: skills_path, skills: std::collections::HashMap::new() }
+                }
+            },
+            _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                tracing::warn!("Skill executor initialization timeout, continuing with empty skills");
+                SkillExecutor { skills_root: skills_path, skills: std::collections::HashMap::new() }
+            }
+        };
         let skill_executor = Arc::new(skill_executor);
         multi_executor.add_executor(skill_executor);
 
         let multi_executor = Arc::new(multi_executor);
-
-        // Add Tool Discovery Middleware
         harness.add_middleware(Arc::new(ToolDiscoveryMiddleware::new(multi_executor.clone())));
 
         let state_path = PathBuf::from(".agent/sessions").join(format!("session_{}.json", session_id));
         let state = if state_path.exists() {
-            let data = std::fs::read_to_string(&state_path)?;
-            let mut loaded_state: DeepAgentState = serde_json::from_str(&data)?;
-            loaded_state.sandbox_root = std::env::current_dir()?;
-            loaded_state
+            match std::fs::read_to_string(&state_path) {
+                Ok(data) => {
+                    match serde_json::from_str::<DeepAgentState>(&data) {
+                        Ok(mut loaded_state) => {
+                            tracing::info!("Loaded session from {}", state_path.display());
+                            loaded_state.sandbox_root = std::env::current_dir()?;
+                            loaded_state
+                        }
+                        Err(parse_err) => {
+                            tracing::warn!("Failed to parse session {}: {}. Creating backup and new session.", state_path.display(), parse_err);
+                            let backup_path = state_path.with_extension("json.corrupt");
+                            let _ = std::fs::copy(&state_path, &backup_path);
+                            DeepAgentState {
+                                session_id,
+                                context: Arc::new(Context { items: vec![] }),
+                                sandbox_root: std::env::current_dir()?,
+                            }
+                        }
+                    }
+                }
+                Err(read_err) => {
+                    tracing::error!("Failed to read session file: {}. Creating new.", read_err);
+                    DeepAgentState {
+                        session_id,
+                        context: Arc::new(Context { items: vec![] }),
+                        sandbox_root: std::env::current_dir()?,
+                    }
+                }
+            }
         } else {
             DeepAgentState {
                 session_id,
@@ -189,7 +254,7 @@ impl AgentManager {
         };
 
         let agent = DeepAgent::new(harness, state, multi_executor, memory_controller);
-        Ok(Self { agent, event_tx })
+        Ok(Self { agent, event_tx, context_consumer: ContextConsumer::new() })
     }
 
     pub async fn get_available_commands(&self) -> Result<Vec<String>> {
@@ -216,61 +281,75 @@ impl AgentManager {
         }
 
         use mentalist::agent::AgentStepEvent;
-        use futures_util::StreamExt;
         
         let mut stream = Box::pin(self.agent.step_stream(input, mentalist::agent::StepConfig::default()));
-        while let Some(res) = stream.next().await {
-            match res? {
-                AgentStepEvent::TextChunk(c) => {
-                    let _ = self.event_tx.send(AgentEvent::TextChunk(c));
+        let mut total_chunks = 0;
+        let mut last_status = "Processing...".to_string();
+
+        while let Some(step_result) = stream.next().await {
+            match step_result {
+                Ok(event) => {
+                    match event {
+                        AgentStepEvent::TextChunk(c) => {
+                            total_chunks += 1;
+                            let _ = self.event_tx.try_send(AgentEvent::TextChunk(c));
+                        }
+                        AgentStepEvent::Status(s) => {
+                            last_status = s.clone();
+                            let _ = self.event_tx.try_send(AgentEvent::Status(s));
+                        }
+                        AgentStepEvent::ToolStarted(t) => {
+                            tracing::debug!("Tool started: {}", t);
+                            let _ = self.event_tx.try_send(AgentEvent::Status(format!("Tool: {}", t)));
+                        }
+                        AgentStepEvent::ToolFinished(t, result) => {
+                            tracing::debug!("Tool finished: {} -> {} bytes", t, result.len());
+                            let _ = self.event_tx.try_send(AgentEvent::Status(format!("Finished Tool: {}", t)));
+                        }
+                    }
                 }
-                AgentStepEvent::Status(s) => {
-                    let _ = self.event_tx.send(AgentEvent::Status(s));
-                }
-                AgentStepEvent::ToolStarted(t) => {
-                    let _ = self.event_tx.send(AgentEvent::Status(format!("Tool: {}", t)));
-                }
-                AgentStepEvent::ToolFinished(t, _) => {
-                    let _ = self.event_tx.send(AgentEvent::Status(format!("Finished Tool: {}", t)));
+                Err(e) => {
+                    let error_msg = format!("Stream error after {} chunks at status '{}': {}", total_chunks, last_status, e);
+                    tracing::error!("{}", error_msg);
+                    let _ = self.event_tx.try_send(AgentEvent::Error(error_msg));
+                    break;
                 }
             }
+            // Simple backpressure throttle
+            tokio::task::yield_now().await;
         }
         
-        let _ = self.event_tx.send(AgentEvent::Status("Idle".to_string()));
+        let _ = self.event_tx.try_send(AgentEvent::Status("Idle".to_string()));
         Ok(())
     }
 
     async fn handle_command(&mut self, input: &str) -> Result<()> {
-        let parts: Vec<&str> = input.split_whitespace().collect();
-        if parts.is_empty() { return Ok(()); }
-
-        let command = parts[0];
-        let args_str = if input.len() > command.len() {
-            input[command.len()..].trim()
-        } else {
-            ""
+        let (command, args_str) = match CommandParser::parse(input) {
+            Some(res) => res,
+            None => return Ok(()),
         };
 
         match command {
             "/tools" => {
-                let _ = self.event_tx.send(AgentEvent::Status("Discovering tools...".into()));
+                let _ = self.event_tx.try_send(AgentEvent::Status("Discovering tools...".into()));
                 let tools = self.agent.executor.list_tools().await?;
                 let mut list = String::from("### Available Tools\n\n");
                 for t in tools {
                     list.push_str(&format!("- `/{}`: {}\n", t.name, t.description));
                 }
-                let _ = self.event_tx.send(AgentEvent::TextChunk(list));
+                let _ = self.event_tx.try_send(AgentEvent::TextChunk(list));
             }
             "/session" => {
-                if parts.len() < 2 {
-                    let _ = self.event_tx.send(AgentEvent::Error("Usage: /session [list|switch <id>]".into()));
+                let parts: Vec<&str> = args_str.split_whitespace().collect();
+                if parts.is_empty() {
+                    let _ = self.event_tx.try_send(AgentEvent::Error("Usage: /session [list|switch <id>]".into()));
                     return Ok(());
                 }
-                match parts[1] {
+                match parts[0] {
                     "list" => {
                         let sessions_dir = PathBuf::from(".agent/sessions");
                         if !sessions_dir.exists() {
-                            let _ = self.event_tx.send(AgentEvent::TextChunk("No sessions found.".into()));
+                            let _ = self.event_tx.try_send(AgentEvent::TextChunk("No sessions found.".into()));
                             return Ok(());
                         }
                         let entries = std::fs::read_dir(sessions_dir)?;
@@ -283,15 +362,15 @@ impl AgentManager {
                                 list.push_str(&format!("- {}\n", id));
                             }
                         }
-                        let _ = self.event_tx.send(AgentEvent::TextChunk(list));
+                        let _ = self.event_tx.try_send(AgentEvent::TextChunk(list));
                     }
                     "switch" => {
-                        if parts.len() < 3 {
-                            let _ = self.event_tx.send(AgentEvent::Error("Usage: /session switch <id>".into()));
+                        if parts.len() < 2 {
+                            let _ = self.event_tx.try_send(AgentEvent::Error("Usage: /session switch <id>".into()));
                             return Ok(());
                         }
-                        let new_id = parts[2];
-                        let _ = self.event_tx.send(AgentEvent::Status(format!("Switching to {}...", new_id)));
+                        let new_id = parts[1];
+                        let _ = self.event_tx.try_send(AgentEvent::Status(format!("Switching to {}...", new_id)));
                         
                         let session_file = format!("session_{}.json", new_id);
                         let mut state_path = PathBuf::from(".agent/sessions").join(&session_file);
@@ -300,58 +379,69 @@ impl AgentManager {
                         }
 
                         if !state_path.exists() {
-                            let _ = self.event_tx.send(AgentEvent::Error(format!("Session {} not found", new_id)));
+                            let _ = self.event_tx.try_send(AgentEvent::Error(format!("Session {} not found", new_id)));
                             return Ok(());
                         }
                         
-                        let data = std::fs::read_to_string(&state_path)?;
-                        let mut new_state: DeepAgentState = serde_json::from_str(&data)?;
-                        new_state.sandbox_root = std::env::current_dir()?;
-                        self.agent.state = new_state;
-                        
-                        let _ = self.event_tx.send(AgentEvent::TextChunk(format!("Switched to session: {}\n", new_id)));
+                        match std::fs::read_to_string(&state_path) {
+                            Ok(data) => {
+                                match serde_json::from_str::<DeepAgentState>(&data) {
+                                    Ok(mut new_state) => {
+                                        new_state.sandbox_root = std::env::current_dir()?;
+                                        self.agent.state = new_state;
+                                        let _ = self.event_tx.try_send(AgentEvent::TextChunk(format!("Switched to session: {}\n", new_id)));
+                                    }
+                                    Err(e) => {
+                                        let _ = self.event_tx.try_send(AgentEvent::Error(format!("Failed to parse session state: {}", e)));
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let _ = self.event_tx.try_send(AgentEvent::Error(format!("Failed to read session file: {}", e)));
+                            }
+                        }
                     }
                     _ => {
-                        let _ = self.event_tx.send(AgentEvent::Error("Usage: /session [list|switch <id>]".into()));
+                        let _ = self.event_tx.try_send(AgentEvent::Error("Usage: /session [list|switch <id>]".into()));
                     }
                 }
             }
             "/consume" => {
-                let _ = self.event_tx.send(AgentEvent::Status("Studying current directory...".into()));
+                let _ = self.event_tx.try_send(AgentEvent::Status("Studying current directory...".into()));
                 match self.consume_context().await {
                     Ok(count) => {
-                        let _ = self.event_tx.send(AgentEvent::TextChunk(format!("Studied {} files. Knowledge base updated.", count)));
+                        let _ = self.event_tx.try_send(AgentEvent::TextChunk(format!("Studied {} files. Knowledge base updated.", count)));
                     }
                     Err(e) => {
-                        let _ = self.event_tx.send(AgentEvent::Error(format!("Consume failed: {}", e)));
+                        let _ = self.event_tx.try_send(AgentEvent::Error(format!("Consume failed: {}", e)));
                     }
                 }
             }
             "/review" => {
-                let _ = self.event_tx.send(AgentEvent::Status("Auditing staged changes...".into()));
+                let _ = self.event_tx.try_send(AgentEvent::Status("Auditing staged changes...".into()));
                 match self.review_vault().await {
                     Ok(report) => {
-                        let _ = self.event_tx.send(AgentEvent::TextChunk(format!("## Audit Review Report\n{}", report)));
+                        let _ = self.event_tx.try_send(AgentEvent::TextChunk(format!("## Audit Review Report\n{}", report)));
                     }
                     Err(e) => {
-                        let _ = self.event_tx.send(AgentEvent::Error(format!("Review failed: {}", e)));
+                        let _ = self.event_tx.try_send(AgentEvent::Error(format!("Review failed: {}", e)));
                     }
                 }
             }
             "/exit" => {
-                let _ = self.event_tx.send(AgentEvent::Quit);
+                let _ = self.event_tx.try_send(AgentEvent::Quit);
             }
             "/summarize" => {
-                let _ = self.event_tx.send(AgentEvent::Status("Optimizing context...".into()));
+                let _ = self.event_tx.try_send(AgentEvent::Status("Optimizing context...".into()));
                 let before = self.agent.state.context.items.len();
                 
                 let mut current_ctx = (*self.agent.state.context).clone();
                 if let Err(e) = self.agent.harness.optimize_context(&mut current_ctx).await {
-                    let _ = self.event_tx.send(AgentEvent::Error(format!("Summarization failed: {}", e)));
+                    let _ = self.event_tx.try_send(AgentEvent::Error(format!("Summarization failed: {}", e)));
                 } else {
                     self.agent.state.context = Arc::new(current_ctx);
                     let after = self.agent.state.context.items.len();
-                    let _ = self.event_tx.send(AgentEvent::TextChunk(format!("Context optimized: {} -> {} items.\n", before, after)));
+                    let _ = self.event_tx.try_send(AgentEvent::TextChunk(format!("Context optimized: {} -> {} items.\n", before, after)));
                 }
             }
             _ if command.starts_with('/') => {
@@ -360,139 +450,68 @@ impl AgentManager {
                 if let Some(tool_def) = tools.iter().find(|t| t.name == tool_name).cloned() {
                     self.execute_tool_command(tool_name, args_str, &tool_def).await?;
                 } else {
-                    let _ = self.event_tx.send(AgentEvent::Error(format!("Unknown command or tool: {}", command)));
+                    let _ = self.event_tx.try_send(AgentEvent::Error(format!("Unknown command or tool: {}", command)));
                 }
             }
             _ => {
-                let _ = self.event_tx.send(AgentEvent::Error(format!("Unknown command: {}", parts[0])));
+                let _ = self.event_tx.try_send(AgentEvent::Error(format!("Unknown command: {}", command)));
             }
         }
         
-        let _ = self.event_tx.send(AgentEvent::Status("Idle".to_string()));
+        let _ = self.event_tx.try_send(AgentEvent::Status("Idle".to_string()));
         Ok(())
     }
 
     async fn execute_tool_command(&mut self, name: &str, args_str: &str, def: &mem_core::ToolDefinition) -> Result<()> {
-        let _ = self.event_tx.send(AgentEvent::Status(format!("Executing Tool: {}", name)));
+        let _ = self.event_tx.try_send(AgentEvent::Status(format!("Executing Tool: {}", name)));
         
-        // Simple argument parsing
-        let args = self.parse_tool_args(args_str, def)?;
+        let args = ToolArgumentParser::parse(args_str, def)?;
         
         match self.agent.executor.execute(name, args.clone()).await {
             Ok(res) => {
-                // Update context
                 let mut current_ctx = (*self.agent.state.context).clone();
-                current_ctx.items.push(mem_core::MemoryItem {
-                    role: mem_core::MemoryRole::User,
+                current_ctx.items.push(MemoryItem {
+                    role: MemoryRole::User,
                     content: format!("MANUAL TOOL CALL: /{} {}", name, args_str),
                     timestamp: chrono::Utc::now().timestamp() as u64,
                     metadata: serde_json::json!({}),
                 });
-                current_ctx.items.push(mem_core::MemoryItem {
-                    role: mem_core::MemoryRole::Tool,
+                current_ctx.items.push(MemoryItem {
+                    role: MemoryRole::Tool,
                     content: res.clone(),
                     timestamp: chrono::Utc::now().timestamp() as u64,
                     metadata: serde_json::json!({"tool": name}),
                 });
                 self.agent.state.context = Arc::new(current_ctx);
                 
-                let _ = self.event_tx.send(AgentEvent::TextChunk(format!("\n#### Tool Result: {}\n---\n{}\n---\n", name, res)));
+                let _ = self.event_tx.try_send(AgentEvent::TextChunk(format!("\n#### Tool Result: {}\n---\n{}\n---\n", name, res)));
             }
             Err(e) => {
-                let _ = self.event_tx.send(AgentEvent::Error(format!("Tool execution failed: {}", e)));
+                let _ = self.event_tx.try_send(AgentEvent::Error(format!("Tool execution failed: {}", e)));
             }
         }
         Ok(())
     }
 
-    fn parse_tool_args(&self, args_str: &str, def: &mem_core::ToolDefinition) -> Result<serde_json::Value> {
-        if args_str.trim().is_empty() {
-            return Ok(serde_json::json!({}));
-        }
-
-        // 1. Try parsing as JSON first
-        if let Ok(val) = serde_json::from_str(args_str) {
-            return Ok(val);
-        }
-
-        // 2. Try parsing as key=value pairs
-        let mut map = serde_json::Map::new();
-        let parts = shlex::split(args_str).unwrap_or_default();
-        for part in parts {
-            if let Some((k, v)) = part.split_once('=') {
-                map.insert(k.to_string(), serde_json::json!(v));
-            }
-        }
-
-        if !map.is_empty() {
-            return Ok(serde_json::Value::Object(map));
-        }
-
-        // 3. Fallback: If tool has exactly one parameter, pass the whole string
-        if let Some(obj) = def.parameters.get("properties").and_then(|p| p.as_object()) {
-            if obj.len() == 1 {
-                let key = obj.keys().next().unwrap();
-                return Ok(serde_json::json!({ key: args_str }));
-            }
-        }
-
-        // Default to passing as a single string if it's not JSON/K=V
-        Ok(serde_json::json!(args_str))
-    }
-
 
     async fn consume_context(&mut self) -> Result<usize> {
         let root = std::env::current_dir()?;
-        let mut count = 0;
+        let report = self.context_consumer.consume_with_limits(&root).await?;
         
-        // Simple recursive text walker (ignoring binary/hidden/node_modules)
-        let entries = self.walk_dir(&root)?;
-        for path in entries {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                // For now, let's just trigger a specialized reasoning loop step
-                let _ = self.agent.step(format!("Study this file and extract its core knowledge: {:?}\n\nCONTENT:\n{}", path.strip_prefix(&root).unwrap_or(&path), content)).await?;
+        let mut count = 0;
+        for path in report.processed_files {
+            if let Ok(content) = tokio::fs::read_to_string(&path).await {
+                let filename = path.strip_prefix(&root).unwrap_or(&path);
+                let _ = self.agent.step(format!("Study this file and extract its core knowledge: {:?}\n\nCONTENT:\n{}", filename, content)).await?;
                 count += 1;
             }
         }
         Ok(count)
     }
 
-    fn walk_dir(&self, dir: &PathBuf) -> Result<Vec<PathBuf>> {
-        let mut files = Vec::new();
-        if dir.is_dir() {
-            for entry in std::fs::read_dir(dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.is_file() {
-                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default();
-                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-                    if ["rs", "toml", "md", "txt", "js", "ts", "json", "env"].contains(&ext) && !name.starts_with('.') {
-                        files.push(path);
-                    }
-                } else if path.is_dir() {
-                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-                    if name != "target" && name != "node_modules" && !name.starts_with('.') {
-                        files.extend(self.walk_dir(&path)?);
-                    }
-                }
-            }
-        }
-        Ok(files)
-    }
-
     async fn review_vault(&mut self) -> Result<String> {
-        let _ = self.event_tx.send(AgentEvent::Status("Reading vault contents...".into()));
-        // Logic to read vault and run specialized AI step
+        let _ = self.event_tx.try_send(AgentEvent::Status("Reading vault contents...".into()));
         let report = self.agent.step("Perform an audit review of all files in the staging vault. Identify bugs, errors, and potential enhancements.".into()).await?;
         Ok(report)
-    }
-}
-
-// Minimal Mock for initialization
-struct MockLlmClient;
-#[async_trait]
-impl LlmClient for MockLlmClient {
-    async fn completion(&self, _prompt: &str) -> Result<String> {
-        Ok("[]".to_string())
     }
 }

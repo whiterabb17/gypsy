@@ -89,7 +89,7 @@ impl TokenCounter for DummyCounter {
 
 #[tokio::test]
 async fn test_e2e_autonomous_tool_loop() {
-    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (tx, mut rx) = mpsc::channel(100);
     let mut config = AppConfig::from_env();
     config.session_id = "test_e2e_autonomous_001".to_string();
     
@@ -101,7 +101,7 @@ async fn test_e2e_autonomous_tool_loop() {
         Arc::new(DummyEmbed),
         Arc::new(DummyCounter),
         config
-    ).unwrap();
+    ).await.unwrap();
     
     // 1. Send User Prompt
     let _ = manager.run_step("Check status".into()).await.unwrap();
@@ -111,7 +111,7 @@ async fn test_e2e_autonomous_tool_loop() {
     while let Ok(event) = rx.try_recv() {
         match event {
             AgentEvent::TextChunk(c) => logs.push(c),
-            AgentEvent::Status(s) => println!("Status: {}", s),
+            AgentEvent::Status(s) => eprintln!("Status: {}", s),
             _ => (),
         }
     }
