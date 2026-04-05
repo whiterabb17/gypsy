@@ -359,7 +359,6 @@ dependencies = [
 [[package]]
 name = "brain"
 version = "0.2.2"
-source = "git+https://github.com/whiterabb17/mindpalace.git#4517d895687cc778d6eb85be1bbc0ad99b533145"
 dependencies = [
  "anyhow",
  "mem-bridge",
@@ -1512,11 +1511,16 @@ dependencies = [
  "futures-util",
  "jsonschema",
  "mem-bridge",
+ "mem-compactor",
  "mem-core",
+ "mem-dreamer",
  "mem-extractor",
+ "mem-micro",
  "mem-offloader",
+ "mem-personality",
  "mem-resilience",
  "mem-retriever",
+ "mem-session",
  "mentalist",
  "ollama-rs",
  "once_cell",
@@ -2358,7 +2362,6 @@ checksum = "4facc753ae494aeb6e3c22f839b158aebd4f9270f55cd3c79906c45476c47ab4"
 [[package]]
 name = "mem-bridge"
 version = "0.2.2"
-source = "git+https://github.com/whiterabb17/mindpalace.git#4517d895687cc778d6eb85be1bbc0ad99b533145"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2373,7 +2376,6 @@ dependencies = [
 [[package]]
 name = "mem-compactor"
 version = "0.2.2"
-source = "git+https://github.com/whiterabb17/mindpalace.git#4517d895687cc778d6eb85be1bbc0ad99b533145"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2389,7 +2391,6 @@ dependencies = [
 [[package]]
 name = "mem-core"
 version = "0.2.2"
-source = "git+https://github.com/whiterabb17/mindpalace.git#4517d895687cc778d6eb85be1bbc0ad99b533145"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2419,7 +2420,6 @@ dependencies = [
 [[package]]
 name = "mem-dreamer"
 version = "0.2.2"
-source = "git+https://github.com/whiterabb17/mindpalace.git#4517d895687cc778d6eb85be1bbc0ad99b533145"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2436,7 +2436,6 @@ dependencies = [
 [[package]]
 name = "mem-extractor"
 version = "0.2.2"
-source = "git+https://github.com/whiterabb17/mindpalace.git#4517d895687cc778d6eb85be1bbc0ad99b533145"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2453,7 +2452,6 @@ dependencies = [
 [[package]]
 name = "mem-micro"
 version = "0.2.2"
-source = "git+https://github.com/whiterabb17/mindpalace.git#4517d895687cc778d6eb85be1bbc0ad99b533145"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2468,7 +2466,6 @@ dependencies = [
 [[package]]
 name = "mem-offloader"
 version = "0.2.2"
-source = "git+https://github.com/whiterabb17/mindpalace.git#4517d895687cc778d6eb85be1bbc0ad99b533145"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2481,9 +2478,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "mem-personality"
+version = "0.2.2"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "mem-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "mem-resilience"
 version = "0.2.2"
-source = "git+https://github.com/whiterabb17/mindpalace.git#4517d895687cc778d6eb85be1bbc0ad99b533145"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2500,7 +2510,6 @@ dependencies = [
 [[package]]
 name = "mem-retriever"
 version = "0.2.2"
-source = "git+https://github.com/whiterabb17/mindpalace.git#4517d895687cc778d6eb85be1bbc0ad99b533145"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2518,7 +2527,6 @@ dependencies = [
 [[package]]
 name = "mem-session"
 version = "0.2.2"
-source = "git+https://github.com/whiterabb17/mindpalace.git#4517d895687cc778d6eb85be1bbc0ad99b533145"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2558,7 +2566,6 @@ dependencies = [
 [[package]]
 name = "mentalist"
 version = "0.3.1"
-source = "git+https://github.com/whiterabb17/mentalist.git#93bbbe33a55369b4dc576268d36d340854a4f60a"
 dependencies = [
  "anyhow",
  "async-recursion",
@@ -2569,11 +2576,16 @@ dependencies = [
  "chrono",
  "futures-util",
  "mem-bridge",
+ "mem-compactor",
  "mem-core",
+ "mem-dreamer",
  "mem-extractor",
+ "mem-micro",
  "mem-offloader",
+ "mem-personality",
  "mem-resilience",
  "mem-retriever",
+ "mem-session",
  "reqwest 0.12.28",
  "reqwest-eventsource",
  "ruvector-core",

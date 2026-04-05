@@ -128,22 +128,24 @@ impl AgentManager {
         let storage = FileStorage::new(storage_root.clone());
         
         let session_id = config.session_id.clone();
-        let mp_config = config.to_mindpalace_config();
-        
-        let mut mp_middleware = MindPalaceMiddleware::hardened(
+        let sessions_dir = PathBuf::from(&config.sessions_path);
+        let vault_path = sessions_dir.join(&session_id).join("vault");
+        std::fs::create_dir_all(&vault_path).ok();
+
+        let mp_middleware = MindPalaceMiddleware::hardened(
             storage.clone(),
-            Arc::new(MockLlmClient::new(vec!["[]".to_string()])),
+            provider.clone(),
             embeddings.clone(),
             token_counter.clone(),
             session_id.clone(),
-            config.embedding_dimension,
+            config.embedding_dimension as usize,
+            vault_path,
         );
         
-        let brain = Arc::new(Brain::new(mp_config, None, Some(token_counter.clone())));
-        mp_middleware.brain = brain.clone();
+        let brain = mp_middleware.brain.clone();
 
         let memory_controller = Arc::new(ResilientMemoryController::new(
-            brain,
+            brain.clone(),
             storage.clone(),
             config.failure_threshold as usize
         ));
@@ -155,7 +157,8 @@ impl AgentManager {
 
         let mut harness = Harness::new(provider);
         harness.add_middleware(Arc::new(mentalist::middleware::LoggingMiddleware));
-        harness.add_middleware(Arc::new(mp_middleware));
+        let mp_middleware = Arc::new(mp_middleware);
+        harness.add_middleware(mp_middleware.clone());
         harness.add_middleware(Arc::new(monitoring));
 
         let exec_mode = match config.sandbox_mode.to_lowercase().as_str() {
@@ -275,7 +278,13 @@ impl AgentManager {
             }
         };
 
-        let agent = DeepAgent::new(harness, state, multi_executor, memory_controller);
+        let scheduler = mp_middleware.dreamer.as_ref().map(|d| {
+            let mut s = mem_dreamer::DreamScheduler::new(d.clone());
+            s.start();
+            s
+        });
+
+        let agent = DeepAgent::new(harness, state, multi_executor, memory_controller, scheduler);
         Ok(Self {
             agent,
             event_tx,

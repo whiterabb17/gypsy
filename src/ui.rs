@@ -37,6 +37,8 @@ pub struct AppState {
     pub show_debug: bool,
     pub log_scroll: u16,
     pub system_log_scroll: u16,
+    pub follow_chat: bool,
+    pub follow_system: bool,
 }
 
 impl AppState {
@@ -55,11 +57,28 @@ impl AppState {
             show_debug: false,
             log_scroll: 0,
             system_log_scroll: 0,
+            follow_chat: true,
+            follow_system: true,
         }
     }
 }
 
-pub fn ui(f: &mut Frame, state: &AppState) {
+fn estimate_height(text: &Text, width: u16) -> u16 {
+    if width == 0 { return 0; }
+    let mut height = 0;
+    for line in &text.lines {
+        let line_width = line.width() as u16;
+        if line_width == 0 {
+            height += 1;
+        } else {
+            // Basic wrap estimation: total width / available width
+            height += (line_width + width - 1) / width;
+        }
+    }
+    height
+}
+
+pub fn ui(f: &mut Frame, state: &mut AppState) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
@@ -117,10 +136,18 @@ pub fn ui(f: &mut Frame, state: &AppState) {
         chat_text.lines.push(line);
     }
 
+    let chat_inner_width = left_chunks[0].width.saturating_sub(2);
+    let chat_inner_height = left_chunks[0].height.saturating_sub(2);
+    let chat_content_height = estimate_height(&chat_text, chat_inner_width);
+
+    if state.follow_chat {
+        state.log_scroll = chat_content_height.saturating_sub(chat_inner_height);
+    }
+
     let chat_title = if state.log_scroll > 0 {
-        format!("Agent Session Log [Scroll: {}]", state.log_scroll)
+        format!(" Agent Session Log [Scroll: {}] ", state.log_scroll)
     } else {
-        "Agent Session Log".to_string()
+        " Agent Session Log ".to_string()
     };
 
     let chat_paragraph = Paragraph::new(chat_text)
@@ -241,10 +268,18 @@ pub fn ui(f: &mut Frame, state: &AppState) {
             system_text.lines.push(line);
         }
 
+        let system_inner_width = right_chunks[4].width.saturating_sub(2);
+        let system_inner_height = right_chunks[4].height.saturating_sub(2);
+        let system_content_height = estimate_height(&system_text, system_inner_width);
+
+        if state.follow_system {
+            state.system_log_scroll = system_content_height.saturating_sub(system_inner_height);
+        }
+
         let system_title = if state.system_log_scroll > 0 {
-            format!("Under-the-Hood [Scroll: {}] [DEBUG ON]", state.system_log_scroll)
+            format!(" Under-the-Hood [Scroll: {}] [DEBUG ON] ", state.system_log_scroll)
         } else {
-            "Under-the-Hood [DEBUG ON]".to_string()
+            " Under-the-Hood [DEBUG ON] ".to_string()
         };
 
         let system_paragraph = Paragraph::new(system_text)

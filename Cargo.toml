@@ -13,6 +13,11 @@ mem-extractor = { git = "https://github.com/whiterabb17/mindpalace.git" }
 mem-retriever = { git = "https://github.com/whiterabb17/mindpalace.git" }
 mem-bridge = { git = "https://github.com/whiterabb17/mindpalace.git" }
 mem-offloader = { git = "https://github.com/whiterabb17/mindpalace.git" }
+mem-micro = { git = "https://github.com/whiterabb17/mindpalace.git" }
+mem-personality = { git = "https://github.com/whiterabb17/mindpalace.git" }
+mem-session = { git = "https://github.com/whiterabb17/mindpalace.git" }
+mem-compactor = { git = "https://github.com/whiterabb17/mindpalace.git" }
+mem-dreamer = { git = "https://github.com/whiterabb17/mindpalace.git" }
 
 # TUI stack
 ratatui = "0.26"
@@ -42,3 +47,20 @@ ringbuffer = "0.15"
 jsonschema = "0.17"
 ruvector-core = "2.1"
 ruvector-graph = "2.0"
+
+[patch."https://github.com/whiterabb17/mentalist.git"]
+mentalist = { path = "../mentalist" }
+
+[patch."https://github.com/whiterabb17/mindpalace.git"]
+mem-core = { path = "../mindpalace/crates/mem-core" }
+brain = { path = "../mindpalace/crates/brain" }
+mem-resilience = { path = "../mindpalace/crates/mem-resilience" }
+mem-extractor = { path = "../mindpalace/crates/mem-extractor" }
+mem-retriever = { path = "../mindpalace/crates/mem-retriever" }
+mem-bridge = { path = "../mindpalace/crates/mem-bridge" }
+mem-offloader = { path = "../mindpalace/crates/mem-offloader" }
+mem-micro = { path = "../mindpalace/crates/mem-micro" }
+mem-personality = { path = "../mindpalace/crates/mem-personality" }
+mem-session = { path = "../mindpalace/crates/mem-session" }
+mem-compactor = { path = "../mindpalace/crates/mem-compactor" }
+mem-dreamer = { path = "../mindpalace/crates/mem-dreamer" }

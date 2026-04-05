@@ -319,15 +319,7 @@ async fn main() -> Result<()> {
     });
 
     'main_loop: loop {
-        // Separate counts for scrolling
-        let (chat_count, system_count) = state.log.iter().fold((0usize, 0usize), |(c, s), e| {
-            match e {
-                LogEntry::User(_) | LogEntry::Gypsy(_) | LogEntry::Error(_) => (c + 1, s),
-                LogEntry::Info(_) | LogEntry::Warn(_) => (c, s + 1),
-                LogEntry::Debug(_) | LogEntry::Trace(_) if state.show_debug => (c, s + 1),
-                _ => (c, s),
-            }
-        });
+
 
         // Drain Background Logs
         let mut new_logs = false;
@@ -337,18 +329,10 @@ async fn main() -> Result<()> {
         }
 
         if new_logs {
-            // Auto-scroll logic for chat (Interaction Log)
-            if state.log_scroll >= chat_count.saturating_sub(5) as u16 {
-                state.log_scroll = chat_count as u16;
-            }
-            
-            // Auto-scroll logic for system log (Under-the-Hood)
-            if state.system_log_scroll >= system_count.saturating_sub(5) as u16 {
-                state.system_log_scroll = system_count as u16;
-            }
+            // Auto-scrolling is now handled inside ui() base on state.follow_chat/system
         }
 
-        terminal.draw(|f| ui(f, &state))?;
+        terminal.draw(|f| ui(f, &mut state))?;
 
         if event::poll(Duration::from_millis(10))? {
             if let Event::Key(key) = event::read()? {
@@ -365,15 +349,19 @@ async fn main() -> Result<()> {
                     KeyCode::PageUp => {
                         if key.modifiers.contains(event::KeyModifiers::SHIFT) {
                             state.system_log_scroll = state.system_log_scroll.saturating_sub(5);
+                            state.follow_system = false;
                         } else {
                             state.log_scroll = state.log_scroll.saturating_sub(5);
+                            state.follow_chat = false;
                         }
                     }
                     KeyCode::PageDown => {
                         if key.modifiers.contains(event::KeyModifiers::SHIFT) {
                             state.system_log_scroll = state.system_log_scroll.saturating_add(5);
+                            state.follow_system = true; // Resume following when scrolling down
                         } else {
                             state.log_scroll = state.log_scroll.saturating_add(5);
+                            state.follow_chat = true; // Resume following when scrolling down
                         }
                     }
                     KeyCode::Tab => {
@@ -387,7 +375,7 @@ async fn main() -> Result<()> {
                         state.autocomplete_suggestions.clear();
                         if !input.trim().is_empty() {
                             state.log.push(LogEntry::User(input.clone()));
-                            state.log_scroll = chat_count as u16; // Scroll to bottom
+                            state.follow_chat = true; // Reset scroll to bottom on new input
                             state.status = "Thinking...".to_string();
                             state.is_thinking = true;
                             if let Err(_) = input_tx.try_send(input) {
