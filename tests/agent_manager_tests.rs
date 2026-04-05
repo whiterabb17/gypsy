@@ -1,5 +1,4 @@
 use gypsy::agent_manager::AgentManager;
-use mentalist::DeepAgentState;
 use gypsy::config::AppConfig;
 use mem_core::{EmbeddingProvider, TokenCounter, Response, ResponseChunk, ModelProvider, Request};
 use async_trait::async_trait;

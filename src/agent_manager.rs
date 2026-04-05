@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use mentalist::{Harness, DeepAgent, DeepAgentState, Request, Response, ToolCall, ModelProvider};
 use mentalist::executor::{ExecutionMode, MultiExecutor};
 use mentalist::mcp::McpExecutor;
@@ -10,7 +10,7 @@ use mem_core::{Context, FileStorage, EmbeddingProvider, LlmClient, TokenCounter,
 use mem_resilience::ResilientMemoryController;
 use async_trait::async_trait;
 use crate::config::AppConfig;
-use crate::error::GypsyResult;
+
 use crate::command_parser::{CommandParser, ToolArgumentParser};
 use crate::context_consumer::ContextConsumer;
 use std::path::PathBuf;
