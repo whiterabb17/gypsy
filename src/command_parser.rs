@@ -44,7 +44,7 @@ impl ToolArgumentParser {
         if let Some(props) = def.parameters.get("properties").and_then(|p| p.as_object()) {
             let mut map = serde_json::Map::new();
             if let Some(pairs) = shlex::split(args_str) {
-                for pair in pairs {
+                for pair in pairs.into_iter().take(32) {
                     if let Some((k, v)) = pair.split_once('=') {
                         if let Some(param_schema) = props.get(k) {
                             let typed_val = Self::coerce_type(v, param_schema)?;

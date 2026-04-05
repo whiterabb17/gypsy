@@ -34,6 +34,7 @@ pub struct AppConfig {
 
     // Storage & Session
     pub storage_path: String,
+    pub sessions_path: String,
     pub vault_path: Option<String>,
     pub session_id: String,
 
@@ -95,6 +96,7 @@ impl AppConfig {
             wasm_env_vars,
 
             storage_path,
+            sessions_path: std::env::var("SESSIONS_PATH").unwrap_or_else(|_| ".agent/sessions".to_string()),
             vault_path: std::env::var("VAULT_PATH").ok(),
             session_id: std::env::var("SESSION_ID").unwrap_or_else(|_| {
                 let now = chrono::Utc::now();

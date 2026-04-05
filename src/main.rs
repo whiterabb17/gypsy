@@ -27,7 +27,9 @@ async fn ensure_ollama_ready(config: &AppConfig) -> Result<()> {
         return Ok(());
     }
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()?;
     let health_url = format!("{}/api/tags", config.ollama_base_url);
 
     // 1. Check Health (Auto-start)
@@ -123,51 +125,55 @@ async fn start_ollama_daemon() -> Result<()> {
 // --- Provider Factory ---
 
 struct ProviderStack {
-    pub model: Box<dyn mentalist::ModelProvider>,
+    pub model: Arc<dyn mentalist::ModelProvider>,
     pub embeddings: Arc<dyn mem_core::EmbeddingProvider>,
     pub token_counter: Arc<dyn mem_core::TokenCounter>,
 }
 
 fn create_providers(config: &AppConfig) -> Result<ProviderStack> {
     let (model, embeddings, token_counter): (
-        Box<dyn mentalist::ModelProvider>,
+        Arc<dyn mentalist::ModelProvider>,
         Arc<dyn mem_core::EmbeddingProvider>,
         Arc<dyn mem_core::TokenCounter>,
     ) = match config.provider.to_lowercase().as_str() {
         "anthropic" => {
             let key = config.anthropic_api_key.as_ref().context("ANTHROPIC_API_KEY missing")?.clone();
             let model = config.model_name.clone();
+            let provider = Arc::new(mem_core::AnthropicProvider::new(key, model));
             (
-                Box::new(mem_core::AnthropicProvider::new(key.clone(), model.clone())),
-                Arc::new(mem_core::AnthropicProvider::new(key.clone(), model.clone())) as Arc<dyn mem_core::EmbeddingProvider>,
-                Arc::new(mem_core::AnthropicProvider::new(key, model)) as Arc<dyn mem_core::TokenCounter>,
+                provider.clone() as Arc<dyn mentalist::ModelProvider>,
+                provider.clone() as Arc<dyn mem_core::EmbeddingProvider>,
+                provider as Arc<dyn mem_core::TokenCounter>,
             )
         }
         "openai" => {
             let key = config.openai_api_key.as_ref().context("OPENAI_API_KEY missing")?.clone();
             let model = config.model_name.clone();
+            let provider = Arc::new(mem_core::OpenAiProvider::new(key, model));
             (
-                Box::new(mem_core::OpenAiProvider::new(key.clone(), model.clone())),
-                Arc::new(mem_core::OpenAiProvider::new(key.clone(), model.clone())) as Arc<dyn mem_core::EmbeddingProvider>,
-                Arc::new(mem_core::OpenAiProvider::new(key, model)) as Arc<dyn mem_core::TokenCounter>,
+                provider.clone() as Arc<dyn mentalist::ModelProvider>,
+                provider.clone() as Arc<dyn mem_core::EmbeddingProvider>,
+                provider as Arc<dyn mem_core::TokenCounter>,
             )
         }
         "gemini" => {
             let key = config.gemini_api_key.as_ref().context("GEMINI_API_KEY missing")?.clone();
             let model = config.model_name.clone();
+            let provider = Arc::new(mem_core::GeminiProvider::new(key, model));
             (
-                Box::new(mem_core::GeminiProvider::new(key.clone(), model.clone())),
-                Arc::new(mem_core::GeminiProvider::new(key.clone(), model.clone())) as Arc<dyn mem_core::EmbeddingProvider>,
-                Arc::new(mem_core::GeminiProvider::new(key, model)) as Arc<dyn mem_core::TokenCounter>,
+                provider.clone() as Arc<dyn mentalist::ModelProvider>,
+                provider.clone() as Arc<dyn mem_core::EmbeddingProvider>,
+                provider as Arc<dyn mem_core::TokenCounter>,
             )
         }
         _ => {
-            let m1 = config.model_name.clone();
-            let e1 = config.embedding_model.clone();
+            let m = config.model_name.clone();
+            let e = config.embedding_model.clone();
+            let provider = Arc::new(mem_core::OllamaProvider::new(m, e));
             (
-                Box::new(mem_core::OllamaProvider::new(m1.clone(), e1.clone())),
-                Arc::new(mem_core::OllamaProvider::new(m1.clone(), e1.clone())) as Arc<dyn mem_core::EmbeddingProvider>,
-                Arc::new(mem_core::OllamaProvider::new(m1, e1)) as Arc<dyn mem_core::TokenCounter>,
+                provider.clone() as Arc<dyn mentalist::ModelProvider>,
+                provider.clone() as Arc<dyn mem_core::EmbeddingProvider>,
+                provider as Arc<dyn mem_core::TokenCounter>,
             )
         }
     };
@@ -223,7 +229,9 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for UiLogLayer {
                 tracing::Level::DEBUG => LogEntry::Debug(msg),
                 tracing::Level::TRACE => LogEntry::Trace(msg),
             };
-            let _ = self.tx.try_send(entry);
+            if let Err(mpsc::error::TrySendError::Full(_)) = self.tx.try_send(entry) {
+                // Drop log if channel full, but don't panic
+            }
         }
     }
 }
@@ -257,7 +265,7 @@ async fn main() -> Result<()> {
 
     let mut manager = AgentManager::new(
         event_tx.clone(),
-        providers.model,
+        providers.model.clone(),
         providers.embeddings,
         providers.token_counter,
         config,

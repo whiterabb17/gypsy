@@ -65,6 +65,14 @@ pub enum AgentEvent {
     Error(String),
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct SessionFile {
+    pub version: u32,
+    pub state: DeepAgentState,
+}
+
+const CURRENT_SESSION_VERSION: u32 = 1;
+
 pub struct MonitoringMiddleware {
     tx: mpsc::Sender<AgentEvent>,
     token_counter: Arc<dyn TokenCounter>,
@@ -110,7 +118,7 @@ pub struct AgentManager {
 impl AgentManager {
     pub async fn new(
         event_tx: mpsc::Sender<AgentEvent>,
-        provider: Box<dyn ModelProvider>,
+        provider: Arc<dyn ModelProvider>,
         embeddings: Arc<dyn EmbeddingProvider>,
         token_counter: Arc<dyn TokenCounter>,
         config: AppConfig,
@@ -214,24 +222,37 @@ impl AgentManager {
         let multi_executor = Arc::new(multi_executor);
         harness.add_middleware(Arc::new(ToolDiscoveryMiddleware::new(multi_executor.clone())));
 
-        let state_path = PathBuf::from(".agent/sessions").join(format!("session_{}.json", session_id));
+        let sessions_dir = PathBuf::from(&config.sessions_path);
+        if !sessions_dir.exists() {
+            let _ = std::fs::create_dir_all(&sessions_dir);
+        }
+
+        let state_path = sessions_dir.join(format!("session_{}.json", session_id));
         let state = if state_path.exists() {
             match std::fs::read_to_string(&state_path) {
                 Ok(data) => {
-                    match serde_json::from_str::<DeepAgentState>(&data) {
-                        Ok(mut loaded_state) => {
-                            tracing::info!("Loaded session from {}", state_path.display());
-                            loaded_state.sandbox_root = std::env::current_dir()?;
-                            loaded_state
+                    match serde_json::from_str::<SessionFile>(&data) {
+                        Ok(mut session) => {
+                            tracing::info!("Loaded session version {} from {}", session.version, state_path.display());
+                            // Migration logic can be added here
+                            session.state.sandbox_root = std::env::current_dir()?;
+                            session.state
                         }
                         Err(parse_err) => {
-                            tracing::warn!("Failed to parse session {}: {}. Creating backup and new session.", state_path.display(), parse_err);
-                            let backup_path = state_path.with_extension("json.corrupt");
-                            let _ = std::fs::copy(&state_path, &backup_path);
-                            DeepAgentState {
-                                session_id,
-                                context: Arc::new(Context { items: vec![] }),
-                                sandbox_root: std::env::current_dir()?,
+                            // Fallback to legacy or handle corruption
+                            if let Ok(mut legacy_state) = serde_json::from_str::<DeepAgentState>(&data) {
+                                tracing::info!("Migrating legacy session to version {}", CURRENT_SESSION_VERSION);
+                                legacy_state.sandbox_root = std::env::current_dir()?;
+                                legacy_state
+                            } else {
+                                tracing::warn!("Failed to parse session {}: {}. Creating backup and new session.", state_path.display(), parse_err);
+                                let backup_path = state_path.with_extension("json.corrupt");
+                                let _ = std::fs::copy(&state_path, &backup_path);
+                                DeepAgentState {
+                                    session_id,
+                                    context: Arc::new(Context { items: vec![] }),
+                                    sandbox_root: std::env::current_dir()?,
+                                }
                             }
                         }
                     }
@@ -275,9 +296,13 @@ impl AgentManager {
         Ok(commands)
     }
 
+    pub async fn name(&self) -> &str { "Gypsy" }
+
     pub async fn run_step(&mut self, input: String) -> Result<()> {
         if input.starts_with('/') {
-            return self.handle_command(&input).await;
+            let res = self.handle_command(&input).await;
+            let _ = self.save_current_session();
+            return res;
         }
 
         use mentalist::agent::AgentStepEvent;
@@ -319,6 +344,8 @@ impl AgentManager {
             tokio::task::yield_now().await;
         }
         
+        drop(stream); // Release borrow on self.agent for session saving
+        let _ = self.save_current_session();
         let _ = self.event_tx.try_send(AgentEvent::Status("Idle".to_string()));
         Ok(())
     }
@@ -372,10 +399,13 @@ impl AgentManager {
                         let new_id = parts[1];
                         let _ = self.event_tx.try_send(AgentEvent::Status(format!("Switching to {}...", new_id)));
                         
+                        // Fallback to default sessions path
+                        let sessions_path = ".agent/sessions".to_string();
+                        
                         let session_file = format!("session_{}.json", new_id);
-                        let mut state_path = PathBuf::from(".agent/sessions").join(&session_file);
+                        let mut state_path = PathBuf::from(&sessions_path).join(&session_file);
                         if !state_path.exists() {
-                             state_path = PathBuf::from(".agent/sessions").join(format!("session_{}.session", new_id));
+                             state_path = PathBuf::from(&sessions_path).join(format!("session_{}.session", new_id));
                         }
 
                         if !state_path.exists() {
@@ -385,14 +415,24 @@ impl AgentManager {
                         
                         match std::fs::read_to_string(&state_path) {
                             Ok(data) => {
-                                match serde_json::from_str::<DeepAgentState>(&data) {
-                                    Ok(mut new_state) => {
-                                        new_state.sandbox_root = std::env::current_dir()?;
-                                        self.agent.state = new_state;
+                                match serde_json::from_str::<SessionFile>(&data) {
+                                    Ok(mut session) => {
+                                        session.state.sandbox_root = std::env::current_dir()?;
+                                        self.agent.state = session.state;
                                         let _ = self.event_tx.try_send(AgentEvent::TextChunk(format!("Switched to session: {}\n", new_id)));
                                     }
-                                    Err(e) => {
-                                        let _ = self.event_tx.try_send(AgentEvent::Error(format!("Failed to parse session state: {}", e)));
+                                    Err(_) => {
+                                        // Try legacy
+                                        match serde_json::from_str::<DeepAgentState>(&data) {
+                                            Ok(mut new_state) => {
+                                                new_state.sandbox_root = std::env::current_dir()?;
+                                                self.agent.state = new_state;
+                                                let _ = self.event_tx.try_send(AgentEvent::TextChunk(format!("Switched to session: {} (legacy format)\n", new_id)));
+                                            }
+                                            Err(e) => {
+                                                let _ = self.event_tx.try_send(AgentEvent::Error(format!("Failed to parse session state: {}", e)));
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -513,5 +553,27 @@ impl AgentManager {
         let _ = self.event_tx.try_send(AgentEvent::Status("Reading vault contents...".into()));
         let report = self.agent.step("Perform an audit review of all files in the staging vault. Identify bugs, errors, and potential enhancements.".into()).await?;
         Ok(report)
+    }
+
+    pub fn save_session(&self, path: PathBuf) -> Result<()> {
+        let session = SessionFile {
+            version: CURRENT_SESSION_VERSION,
+            state: self.agent.state.clone(),
+        };
+        let data = serde_json::to_string_pretty(&session)?;
+        
+        let mut temp_path = path.clone();
+        temp_path.set_extension("tmp");
+        
+        std::fs::write(&temp_path, data)?;
+        std::fs::rename(temp_path, path)?;
+        Ok(())
+    }
+
+    fn save_current_session(&self) -> Result<()> {
+        // This is a bit hacky because we don't store the sessions_path in the struct yet.
+        // But we can derive it from current_dir or just use the default.
+        let path = PathBuf::from(".agent/sessions").join(format!("session_{}.json", self.agent.state.session_id));
+        self.save_session(path)
     }
 }

@@ -51,7 +51,7 @@ async fn test_agent_manager_init() {
     
     let manager = AgentManager::new(
         tx,
-        Box::new(MockProvider),
+        Arc::new(MockProvider),
         Arc::new(MockEmbed),
         Arc::new(MockCounter),
         config
@@ -74,7 +74,7 @@ async fn test_agent_manager_session_persistence() {
     
     let mut manager = AgentManager::new(
         tx.clone(),
-        Box::new(MockProvider),
+        Arc::new(MockProvider),
         Arc::new(MockEmbed),
         Arc::new(MockCounter),
         config.clone()
@@ -99,7 +99,7 @@ async fn test_agent_manager_session_persistence() {
     // 4. Re-init with same ID and verify
     let manager2 = AgentManager::new(
         tx,
-        Box::new(MockProvider),
+        Arc::new(MockProvider),
         Arc::new(MockEmbed),
         Arc::new(MockCounter),
         config

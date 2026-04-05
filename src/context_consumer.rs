@@ -90,7 +90,10 @@ impl ContextConsumer {
         for entry in std::fs::read_dir(dir)? {
             let entry = match entry {
                 Ok(e) => e,
-                Err(_) => continue,
+                Err(e) => {
+                    tracing::debug!("Failed to read directory entry in {}: {}", dir.display(), e);
+                    continue;
+                }
             };
             let path = entry.path();
             

@@ -97,7 +97,7 @@ async fn test_e2e_autonomous_tool_loop() {
     
     let mut manager = AgentManager::new(
         tx,
-        Box::new(model),
+        Arc::new(model),
         Arc::new(DummyEmbed),
         Arc::new(DummyCounter),
         config

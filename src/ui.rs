@@ -8,6 +8,8 @@ use ringbuffer::{AllocRingBuffer, RingBuffer};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 
+const MAX_VISIBLE_LOGS: usize = 300; // Hard limit for performance optimization
+
 #[derive(Clone, Debug)]
 pub enum LogEntry {
     Info(String),
@@ -91,6 +93,10 @@ pub fn ui(f: &mut Frame, state: &AppState) {
             }
         });
 
+    // Apply visibility limits for performance
+    let chat_log = chat_log.take(MAX_VISIBLE_LOGS);
+    let system_log = system_log.take(MAX_VISIBLE_LOGS);
+
     let mut chat_text = Text::default();
     for entry in chat_log {
         let line = match entry {
@@ -111,8 +117,14 @@ pub fn ui(f: &mut Frame, state: &AppState) {
         chat_text.lines.push(line);
     }
 
+    let chat_title = if state.log_scroll > 0 {
+        format!("Agent Session Log [Scroll: {}]", state.log_scroll)
+    } else {
+        "Agent Session Log".to_string()
+    };
+
     let chat_paragraph = Paragraph::new(chat_text)
-        .block(Block::default().borders(Borders::ALL).title("Agent Session Log"))
+        .block(Block::default().borders(Borders::ALL).title(chat_title))
         .wrap(Wrap { trim: true })
         .scroll((state.log_scroll, 0));
     
@@ -215,8 +227,14 @@ pub fn ui(f: &mut Frame, state: &AppState) {
         system_text.lines.push(line);
     }
 
+    let system_title = if state.system_log_scroll > 0 {
+        format!("Under-the-Hood [Scroll: {}]{}", state.system_log_scroll, if state.show_debug { " [DEBUG ON]" } else { "" })
+    } else {
+        format!("Under-the-Hood{}", if state.show_debug { " [DEBUG ON]" } else { "" })
+    };
+
     let system_paragraph = Paragraph::new(system_text)
-        .block(Block::default().borders(Borders::ALL).title(format!("Under-the-Hood{}", if state.show_debug { " [DEBUG ON]" } else { "" })))
+        .block(Block::default().borders(Borders::ALL).title(system_title))
         .wrap(Wrap { trim: true })
         .scroll((state.system_log_scroll, 0));
     
