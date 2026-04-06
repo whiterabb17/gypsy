@@ -257,7 +257,11 @@ impl AgentManager {
             }
             Err(err) => {
                 tracing::error!("Skill executor initialization failed: {}. Continuing with empty skills.", err);
-                SkillExecutor { skills_root: skills_path, skills: std::collections::HashMap::new() }
+                SkillExecutor { 
+                    skills_root: skills_path, 
+                    skills: std::collections::HashMap::new(),
+                    validator: mentalist::executor::CommandValidator::new_default(),
+                }
             }
         };
         let skill_executor = Arc::new(skill_executor);
