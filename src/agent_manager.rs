@@ -15,6 +15,7 @@ use secrecy::ExposeSecret;
 use crate::command_parser::{CommandParser, ToolArgumentParser};
 use crate::context_consumer::ContextConsumer;
 use crate::session::SessionManager;
+use crate::error::{GypsyError, GypsyResult};
 use std::path::PathBuf;
 
 use shlex;
@@ -35,6 +36,10 @@ pub enum AgentEvent {
         step: String,
         tool_name: Option<String>,
     },
+    Progress(f32),
+    PhaseProgress(f32),
+    ToolResult { name: String, success: bool },
+    RequestFallback,
     Error(String),
 }
 
@@ -108,7 +113,7 @@ impl AgentManager {
         embeddings: Arc<dyn EmbeddingProvider>,
         token_counter: Arc<dyn TokenCounter>,
         config: AppConfig,
-    ) -> Result<Self> {
+    ) -> GypsyResult<Self> {
         let storage_root = PathBuf::from(&config.storage_path);
         let storage = FileStorage::new(storage_root.clone());
         
@@ -243,7 +248,7 @@ impl AgentManager {
         })
     }
 
-    pub async fn get_available_commands(&self) -> Result<Vec<String>> {
+    pub async fn get_available_commands(&self) -> GypsyResult<Vec<String>> {
         let mut commands = vec![
             "/tools".to_string(),
             "/session".to_string(),
@@ -264,7 +269,7 @@ impl AgentManager {
 
     pub async fn name(&self) -> &str { "Gypsy" }
 
-    pub async fn run_step(&mut self, input: String) -> Result<()> {
+    pub async fn run_step(&mut self, input: String) -> GypsyResult<()> {
         let start = std::time::Instant::now();
         if input.starts_with('/') {
             let res = self.handle_command(&input).await;
@@ -291,7 +296,9 @@ impl AgentManager {
                             let _ = self.event_tx.try_send(AgentEvent::Status(format!("Tool: {}", t)));
                         }
                         AgentStepEvent::ToolFinished(t, result) => {
-                            tool_results.push((t.clone(), result));
+                            tool_results.push((t.clone(), result.clone()));
+                            let success = !result.to_lowercase().contains("error");
+                            let _ = self.event_tx.try_send(AgentEvent::ToolResult { name: t.clone(), success });
                             let _ = self.event_tx.try_send(AgentEvent::Status(format!("Finished Tool: {}", t)));
                         }
                     }
@@ -336,7 +343,7 @@ impl AgentManager {
         Ok(())
     }
 
-    async fn handle_command(&mut self, input: &str) -> Result<()> {
+    async fn handle_command(&mut self, input: &str) -> GypsyResult<()> {
         let (command, args_str) = match CommandParser::parse(input) {
             Some(res) => res,
             None => return Ok(()),
@@ -489,7 +496,7 @@ impl AgentManager {
         Ok(())
     }
 
-    async fn execute_tool_command(&mut self, name: &str, args_str: &str, def: &mem_core::ToolDefinition) -> Result<()> {
+    async fn execute_tool_command(&mut self, name: &str, args_str: &str, def: &mem_core::ToolDefinition) -> GypsyResult<()> {
         let args = ToolArgumentParser::parse(args_str, def)?;
         match self.agent.executor.execute(name, args.clone()).await {
             Ok(res) => {
@@ -507,42 +514,86 @@ impl AgentManager {
                     metadata: serde_json::json!({"tool": name}),
                 });
                 let _ = self.save_current_session();
+                let success = !res.to_lowercase().contains("error");
+                let _ = self.event_tx.try_send(AgentEvent::ToolResult { name: name.to_string(), success });
                 let _ = self.event_tx.try_send(AgentEvent::TextChunk(format!("\n#### Tool Result: {}\n---\n{}\n---\n", name, res)));
             }
             Err(e) => {
+                let _ = self.event_tx.try_send(AgentEvent::ToolResult { name: name.to_string(), success: false });
                 let _ = self.event_tx.try_send(AgentEvent::Error(format!("Tool execution failed: {}", e)));
             }
         }
         Ok(())
     }
 
-    async fn consume_context(&mut self) -> Result<usize> {
+    async fn consume_context(&mut self) -> GypsyResult<usize> {
         let root = std::env::current_dir()?;
         let report = self.context_consumer.consume_with_limits(&root).await?;
-        let mut count = 0;
-        for path in report.processed_files.iter().take(50) {
-            if let Ok(content) = tokio::fs::read_to_string(&path).await {
-                let filename = path.strip_prefix(&root).unwrap_or(path.as_path());
-                let summary = self.agent.step(format!(
-                    "Extract and summarize the key knowledge from this file for long-term memory. Be concise but thorough.\n\nFilename: {:?}\n\nCONTENT:\n{}", 
-                    filename, content
-                )).await?;
+        
+        use futures_util::stream::{self, StreamExt};
+        let harness = self.agent.harness.clone();
+        let event_tx = self.event_tx.clone();
+        let root_clone = root.clone();
 
-                let current_ctx = Arc::make_mut(&mut self.agent.state.context);
-                current_ctx.items.push(MemoryItem {
-                    role: MemoryRole::System,
-                    content: format!("Knowledge extracted from {:?}:\n{}", filename, summary),
-                    timestamp: chrono::Utc::now().timestamp() as u64,
-                    metadata: serde_json::json!({"source": "consume", "file": filename}),
-                });
-                count += 1;
+        let items: Vec<PathBuf> = report.processed_files.into_iter().take(50).collect();
+        let plan_total = items.len();
+        let results: Vec<Option<(PathBuf, GypsyResult<mentalist::Response>)>> = stream::iter(items.into_iter().enumerate())
+            .map(|(i, path)| {
+                let harness = harness.clone();
+                let event_tx = event_tx.clone();
+                let root = root_clone.clone();
+                async move {
+                    let progress = (i + 1) as f32 / plan_total as f32;
+                    let _ = event_tx.try_send(AgentEvent::Progress(progress));
+                    let _ = event_tx.try_send(AgentEvent::PhaseProgress(progress));
+
+                    if let Ok(content) = tokio::fs::read_to_string(&path).await {
+                        let filename = path.strip_prefix(&root).unwrap_or(path.as_path()).to_path_buf();
+                        let res = harness.run(mentalist::Request {
+                            prompt: format!(
+                                "Extract and summarize the key knowledge from this file for long-term memory. Be concise but thorough.\n\nFilename: {:?}\n\nCONTENT:\n{}", 
+                                filename, content
+                            ),
+                            context: Arc::new(mem_core::Context { items: vec![] }),
+                            tools: vec![],
+                        }).await.map_err(|e| GypsyError::Mentalist(e.to_string()));
+                        Some((filename, res))
+                    } else {
+                        None
+                    }
+                }
+            })
+            .buffer_unordered(3)
+            .collect::<Vec<_>>()
+            .await;
+
+        let mut count = 0;
+        let current_ctx = Arc::make_mut(&mut self.agent.state.context);
+        for res in results.into_iter().flatten() {
+            let (filename, summary_res) = res;
+            match summary_res {
+                Ok(summary) => {
+                    current_ctx.items.push(MemoryItem {
+                        role: MemoryRole::System,
+                        content: format!("Knowledge extracted from {:?}:\n{}", filename, summary.content),
+                        timestamp: chrono::Utc::now().timestamp() as u64,
+                        metadata: serde_json::json!({"source": "consume", "file": filename}),
+                    });
+                    count += 1;
+                }
+                Err(e) => {
+                    tracing::error!("Failed to summarize {:?}: {}", filename, e);
+                }
             }
         }
+
+        let _ = self.event_tx.try_send(AgentEvent::Progress(0.0));
+        let _ = self.event_tx.try_send(AgentEvent::PhaseProgress(0.0));
         let _ = self.save_current_session();
         Ok(count)
     }
 
-    async fn review_vault(&mut self) -> Result<String> {
+    async fn review_vault(&mut self) -> GypsyResult<String> {
         let vault_path = Self::get_vault_path(&self.config, &self.agent.state.session_id);
         if !vault_path.exists() {
             return Ok("Staging vault is empty.".to_string());
@@ -563,8 +614,15 @@ impl AgentManager {
         Ok(report)
     }
 
-    fn save_current_session(&self) -> Result<()> {
-        self.session_manager.save_session(&self.agent.state)
+    fn save_current_session(&self) -> GypsyResult<()> {
+        let mgr = self.session_manager.clone();
+        let state = self.agent.state.clone();
+        tokio::spawn(async move {
+            if let Err(e) = mgr.save_session(&state) {
+                tracing::error!("Async session save failed: {}", e);
+            }
+        });
+        Ok(())
     }
 
     pub fn get_vault_path(config: &AppConfig, session_id: &str) -> PathBuf {

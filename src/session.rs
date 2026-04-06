@@ -11,8 +11,19 @@ pub struct SessionFile {
     pub state: DeepAgentState,
 }
 
+#[derive(Serialize, Deserialize, Default)]
+pub struct SessionMetrics {
+    pub total_input_tokens: usize,
+    pub total_output_tokens: usize,
+    pub tool_calls_total: u32,
+    pub avg_latency_ms: u128,
+    pub tool_success_rate: f32,
+    pub session_duration_seconds: u64,
+}
+
 pub const CURRENT_SESSION_VERSION: u32 = 1;
 
+#[derive(Clone)]
 pub struct SessionManager {
     sessions_dir: PathBuf,
 }
@@ -93,6 +104,13 @@ impl SessionManager {
         
         std::fs::write(&temp_path, data)?;
         std::fs::rename(temp_path, path)?;
+        Ok(())
+    }
+
+    pub fn save_metrics(&self, session_id: &str, metrics: &SessionMetrics) -> Result<()> {
+        let path = self.sessions_dir.join(format!("metrics_{}.json", session_id));
+        let data = serde_json::to_string_pretty(metrics)?;
+        std::fs::write(path, data)?;
         Ok(())
     }
 

@@ -52,6 +52,7 @@ pub struct AppConfig {
     pub model_context_window: usize,
     pub personality_instructions: Option<String>,
     pub system_prompt: Option<String>,
+    pub fallback_mode: String,
 }
 
 impl AppConfig {
@@ -80,7 +81,8 @@ impl AppConfig {
             .set_default("sessions_path", ".agent/sessions").unwrap()
             .set_default("skills_path", ".agent/skills").unwrap()
             .set_default("log_level", "info").unwrap()
-            .set_default("model_context_window", 2048).unwrap();
+            .set_default("model_context_window", 2048).unwrap()
+            .set_default("fallback_mode", "automatic").unwrap();
 
         // Environment overrides
         s = s.add_source(config::Environment::default().separator("__"));

@@ -1,9 +1,10 @@
 use ratatui::{
-    layout::{Constraint, Direction, Layout},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    layout::{Constraint, Direction, Layout, Rect},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap, Gauge, Sparkline},
     Frame,
 };
 use ringbuffer::{AllocRingBuffer, RingBuffer};
+use std::collections::HashMap;
 
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
@@ -47,6 +48,15 @@ pub struct AppState {
     pub total_input_tokens: usize,
     pub total_output_tokens: usize,
     pub llm_latency_ms: u128,
+    
+    // New UX State
+    pub progress: Option<f32>,
+    pub phase_progress: Option<f32>,
+    pub context_status: HashMap<String, bool>, // Renamed from tool_status for clarity? No, keep tool_status
+    pub tool_status: HashMap<String, bool>,
+    pub context_history: Vec<u64>,
+    pub rolling_latency: Vec<u128>,
+    pub fallback_pending: bool,
 }
 
 impl AppState {
@@ -73,6 +83,13 @@ impl AppState {
             total_input_tokens: 0,
             total_output_tokens: 0,
             llm_latency_ms: 0,
+            progress: None,
+            phase_progress: None,
+            context_status: HashMap::new(),
+            tool_status: HashMap::new(),
+            context_history: Vec::new(),
+            rolling_latency: Vec::with_capacity(5),
+            fallback_pending: false,
         }
     }
 }
@@ -98,11 +115,19 @@ pub fn ui(f: &mut Frame, state: &mut AppState) {
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
         .split(f.size());
 
-    // Left Column: Interaction Log & Input
+    let main_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(if state.progress.is_some() { 1 } else { 0 }),
+        ])
+        .split(chunks[0]);
+
+    // 1. Interaction (Chat) Logs
     let left_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(3), Constraint::Length(3)])
-        .split(chunks[0]);
+        .split(main_chunks[0]);
 
     // 1. Interaction (Chat) Logs
     let chat_log = state.log.iter()
@@ -206,8 +231,20 @@ pub fn ui(f: &mut Frame, state: &mut AppState) {
     }
 
     let input = Paragraph::new(state.input_buffer.as_str())
-        .block(Block::default().borders(Borders::ALL).title(input_title));
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .title(input_title)
+            .border_style(if state.fallback_pending { Style::default().fg(Color::LightMagenta) } else { Style::default() }));
     f.render_widget(input, left_chunks[1]);
+
+    // Global Progress Bar
+    if let Some(progress) = state.progress {
+        let gauge = Gauge::default()
+            .block(Block::default())
+            .gauge_style(Style::default().fg(Color::Cyan).bg(Color::Black))
+            .ratio(progress as f64);
+        f.render_widget(gauge, main_chunks[1]);
+    }
 
     // Right Column: Dashboard
     let right_constraints = if state.show_debug {
@@ -260,6 +297,16 @@ pub fn ui(f: &mut Frame, state: &mut AppState) {
         .block(Block::default().borders(Borders::ALL).title(" Diagnostics "));
     f.render_widget(diag_para, right_chunks[0]);
 
+    // Phase Progress in Diagnostics
+    if let Some(p) = state.phase_progress {
+        let gauge_area = Rect::new(right_chunks[0].x + 1, right_chunks[0].y + 2, right_chunks[0].width - 2, 1);
+        let phase_gauge = Gauge::default()
+            .gauge_style(Style::default().fg(Color::Yellow))
+            .ratio(p as f64)
+            .label("");
+        f.render_widget(phase_gauge, gauge_area);
+    }
+
     // 2. Token Metrics
     let token_text = vec![
         Line::from(vec![
@@ -278,7 +325,7 @@ pub fn ui(f: &mut Frame, state: &mut AppState) {
     f.render_widget(token_para, right_chunks[1]);
 
     // 3. Memory & Tools
-    let mem_text = vec![
+    let mut mem_text = vec![
         Line::from(vec![
             Span::styled("Context Size: ", Style::default().fg(Color::Gray)),
             Span::raw(format!("{}", state.context_size)),
@@ -287,14 +334,32 @@ pub fn ui(f: &mut Frame, state: &mut AppState) {
             Span::styled("Tool Count:   ", Style::default().fg(Color::Gray)),
             Span::styled(format!("{}", state.tool_calls_total), Style::default().fg(Color::Magenta)),
         ]),
-        Line::from(vec![
-            Span::styled("Last Tool:     ", Style::default().fg(Color::Gray)),
-            Span::styled(state.last_tool_name.as_str(), Style::default().fg(Color::Cyan)),
-        ]),
     ];
+
+    // Show last 2 tool results
+    let mut recent_tools: Vec<_> = state.tool_status.iter().collect();
+    recent_tools.sort_by(|a, b| b.0.cmp(a.0)); // Sort by name for now, or we'd need a timestamp
+    for (name, success) in recent_tools.iter().take(2) {
+        let color = if **success { Color::Green } else { Color::Red };
+        let icon = if **success { "✓" } else { "✗" };
+        mem_text.push(Line::from(vec![
+            Span::styled(format!(" {} ", icon), Style::default().fg(color)),
+            Span::styled((*name).clone(), Style::default().fg(Color::Gray)),
+        ]));
+    }
+
     let mem_para = Paragraph::new(mem_text)
         .block(Block::default().borders(Borders::ALL).title(" Capacity & Tools "));
     f.render_widget(mem_para, right_chunks[2]);
+    
+    // Sparkline for context history
+    if !state.context_history.is_empty() {
+        let sparkline_area = Rect::new(right_chunks[2].x + 1, right_chunks[2].y + 1, right_chunks[2].width - 2, 1);
+        let sparkline = Sparkline::default()
+            .data(&state.context_history)
+            .style(Style::default().fg(Color::Blue));
+        f.render_widget(sparkline, sparkline_area);
+    }
 
     if state.show_debug {
         // Render Under-the-Hood Logs
@@ -401,4 +466,17 @@ pub fn ui(f: &mut Frame, state: &mut AppState) {
 
     f.render_widget(help_para_left, help_columns[0]);
     f.render_widget(help_para_right, help_columns[1]);
+
+    // Fallback Confirmation Overlay
+    if state.fallback_pending {
+        let area = Rect::new(f.size().width / 4, f.size().height / 2 - 2, f.size().width / 2, 5);
+        let block = Block::default().borders(Borders::ALL).title(" Fallback Confirmation ").border_style(Style::default().fg(Color::LightMagenta));
+        let text = Text::from(vec![
+            Line::from(vec![Span::raw("Primary provider failed. Fallback to Ollama?")]),
+            Line::from(vec![Span::styled("  [Y] Yes / [N] No", Style::default().fg(Color::Yellow))]),
+        ]);
+        let para = Paragraph::new(text).block(block).wrap(Wrap { trim: true });
+        f.render_widget(ratatui::widgets::Clear, area);
+        f.render_widget(para, area);
+    }
 }

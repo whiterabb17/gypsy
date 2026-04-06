@@ -17,11 +17,26 @@ pub enum GypsyError {
     #[error("IO error: {0}")]
     IoError(#[from] io::Error),
     
+    #[error("Network error: {0}")]
+    NetworkError(#[from] reqwest::Error),
+    
     #[error("Serialization error: {0}")]
     SerdeError(#[from] serde_json::Error),
     
+    #[error("Ollama error: {0}")]
+    OllamaError(#[from] ollama_rs::error::OllamaError),
+    
     #[error("General error: {0}")]
-    General(#[from] anyhow::Error),
+    Anyhow(#[from] anyhow::Error),
+    
+    #[error("Mentalist error: {0}")]
+    Mentalist(String),
+}
+
+impl From<mentalist::error::MentalistError> for GypsyError {
+    fn from(e: mentalist::error::MentalistError) -> Self {
+        GypsyError::Mentalist(e.to_string())
+    }
 }
 
 pub type GypsyResult<T> = Result<T, GypsyError>;

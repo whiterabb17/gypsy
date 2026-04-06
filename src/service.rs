@@ -5,6 +5,7 @@ use anyhow::Result;
 use crate::config::AppConfig;
 use std::time::Duration;
 use reqwest;
+use crate::error::{GypsyError, GypsyResult};
 
 pub struct ServiceManager {
     ollama_child: Arc<Mutex<Option<tokio::process::Child>>>,
@@ -17,7 +18,7 @@ impl ServiceManager {
         }
     }
 
-    pub async fn ensure_ollama_ready(&self, config: &AppConfig) -> Result<()> {
+    pub async fn ensure_ollama_ready(&self, config: &AppConfig) -> GypsyResult<()> {
         if config.provider != "ollama" {
             return Ok(());
         }
@@ -45,7 +46,7 @@ impl ServiceManager {
                     }
                 }
                 if !ready {
-                    return Err(anyhow::anyhow!("Ollama failed to start within 30 seconds"));
+                    return Err(GypsyError::AgentError("Ollama failed to start within 30 seconds".into()));
                 }
             }
         }
@@ -53,7 +54,7 @@ impl ServiceManager {
         self.ensure_models_pulled(config).await
     }
 
-    pub async fn check_health(&self, config: &AppConfig) -> Result<bool> {
+    pub async fn check_health(&self, config: &AppConfig) -> GypsyResult<bool> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(2))
             .build()?;
@@ -62,10 +63,10 @@ impl ServiceManager {
         Ok(client.get(&health_url).send().await.is_ok())
     }
 
-    pub async fn ensure_models_pulled(&self, config: &AppConfig) -> Result<()> {
+    pub async fn ensure_models_pulled(&self, config: &AppConfig) -> GypsyResult<()> {
         let ollama = ollama_rs::Ollama::new(
-            config.ollama_base_url.parse::<reqwest::Url>()?.host_str().unwrap_or("localhost").to_string(),
-            config.ollama_base_url.parse::<reqwest::Url>()?.port().unwrap_or(11434)
+            config.ollama_base_url.parse::<reqwest::Url>().map_err(|e| GypsyError::ConfigError(e.to_string()))?.host_str().unwrap_or("localhost").to_string(),
+            config.ollama_base_url.parse::<reqwest::Url>().map_err(|e| GypsyError::ConfigError(e.to_string()))?.port().unwrap_or(11434)
         );
         
         let local_models = ollama.list_local_models().await.unwrap_or_default();
@@ -139,6 +140,13 @@ impl ServiceManager {
             .spawn()?;
         *self.ollama_child.lock().await = Some(child);
         Ok(())
+    }
+
+    pub async fn restart_service(&self, config: &AppConfig) -> GypsyResult<()> {
+        tracing::info!("Restarting Ollama service...");
+        self.shutdown().await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        self.ensure_ollama_ready(config).await
     }
 
     pub async fn shutdown(&self) {
