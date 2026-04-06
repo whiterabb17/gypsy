@@ -2,7 +2,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use anyhow::Result;
 use mentalist::{Harness, DeepAgent, DeepAgentState, Request, Response, ToolCall, ModelProvider};
-use mentalist::executor::{ExecutionMode, MultiExecutor};
+use mentalist::executor::{ExecutionMode, MultiExecutor, ToolExecutor};
 use mentalist::mcp::McpExecutor;
 use mentalist::skills::SkillExecutor;
 use mentalist::middleware::{Middleware, MindPalaceMiddleware, ToolDiscoveryMiddleware};
@@ -14,7 +14,6 @@ use crate::config::AppConfig;
 use crate::command_parser::{CommandParser, ToolArgumentParser};
 use crate::context_consumer::ContextConsumer;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use shlex;
 use chrono;
@@ -93,7 +92,13 @@ impl Middleware for MonitoringMiddleware {
         Ok(())
     }
 
-    async fn after_ai_call(&self, _res: &mut Response) -> Result<()> {
+    async fn after_ai_call(&self, res: &mut Response) -> Result<()> {
+        let tokens: usize = self.token_counter.count_tokens(&res.content);
+        let _ = self.tx.try_send(AgentEvent::MetricUpdate {
+            tokens,
+            context_size: 0, // Context items not directly available in Response hook
+            step: "Thinking Complete".to_string(),
+        });
         let _ = self.tx.try_send(AgentEvent::Status("AI Responded".to_string()));
         Ok(())
     }
@@ -111,9 +116,11 @@ impl Middleware for MonitoringMiddleware {
 
 pub struct AgentManager {
     pub agent: DeepAgent,
+    pub multi_executor: Arc<MultiExecutor>,
     pub event_tx: mpsc::Sender<AgentEvent>,
     pub context_consumer: ContextConsumer,
     pub config: AppConfig,
+    save_lock: Mutex<()>,
 }
 
 impl AgentManager {
@@ -128,8 +135,7 @@ impl AgentManager {
         let storage = FileStorage::new(storage_root.clone());
         
         let session_id = config.session_id.clone();
-        let sessions_dir = PathBuf::from(&config.sessions_path);
-        let vault_path = sessions_dir.join(&session_id).join("vault");
+        let vault_path = Self::get_vault_path(&config, &session_id);
         std::fs::create_dir_all(&vault_path).ok();
 
         let mp_middleware = MindPalaceMiddleware::hardened(
@@ -143,6 +149,8 @@ impl AgentManager {
         );
         
         let brain = mp_middleware.brain.clone();
+        // Issue 1: Validate brain is properly initialized
+        tracing::info!("Brain initialized for session: {}", session_id);
 
         let memory_controller = Arc::new(ResilientMemoryController::new(
             brain.clone(),
@@ -155,10 +163,16 @@ impl AgentManager {
             token_counter: token_counter.clone(),
         };
 
-        let mut harness = Harness::new(provider);
+        let mut harness = Harness::new(provider.clone());
+        // CRITICAL: Middleware order affects behavior - do not reorder without testing
+        // L1: Base logging for all requests/responses
         harness.add_middleware(Arc::new(mentalist::middleware::LoggingMiddleware));
+        
+        // L2: Memory management (must be after logging to capture context)
         let mp_middleware = Arc::new(mp_middleware);
         harness.add_middleware(mp_middleware.clone());
+        
+        // L3: Metrics and status monitoring (must be after memory to see final context)
         harness.add_middleware(Arc::new(monitoring));
 
         let exec_mode = match config.sandbox_mode.to_lowercase().as_str() {
@@ -182,49 +196,81 @@ impl AgentManager {
             vault_path
         )?);
 
-        let mut multi_executor = MultiExecutor::new();
-        multi_executor.add_executor(sandbox_executor);
+        let multi_executor = MultiExecutor::new();
+        multi_executor.add_executor("sandbox".to_string(), sandbox_executor).await;
 
-        for (_name, cmd_line) in &config.mcp_servers {
-            let parts: Vec<String> = shlex::split(cmd_line)
-                .unwrap_or_default();
+        for (name, cmd_line) in &config.mcp_servers {
+            let parts: Vec<String> = match shlex::split(cmd_line) {
+                Some(p) => p,
+                None => {
+                    tracing::error!("Failed to parse MCP server command for {}: invalid shell syntax in '{}'", name, cmd_line);
+                    continue;
+                }
+            };
             if !parts.is_empty() {
                 let cmd = parts[0].clone();
                 let args = parts[1..].to_vec();
-                multi_executor.add_executor(Arc::new(McpExecutor::new(cmd, args)));
+                tracing::info!("Registering MCP server: {} -> {} {:?}", name, cmd, args);
+                multi_executor.add_executor(format!("mcp:{}", name), Arc::new(McpExecutor::new(cmd, args))).await;
+            } else {
+                tracing::warn!("MCP server command for {} is empty after parsing", name);
             }
         }
 
+        // Issue 15 & 22: Validate MCP FS paths
         let fs_paths = if config.mcp_filesystem_paths.is_empty() {
+            tracing::warn!("No MCP_FS_PATHS configured! Defaulting to current directory only for safety.");
             vec![".".to_string()]
         } else {
-            config.mcp_filesystem_paths.clone()
+            let mut valid_paths = Vec::new();
+            for path_str in &config.mcp_filesystem_paths {
+                let path = PathBuf::from(path_str);
+                if path.exists() && path.is_dir() {
+                    valid_paths.push(path_str.clone());
+                } else {
+                    tracing::warn!("MCP_FS_PATHS includes non-existent or invalid directory: {}. Skipping.", path_str);
+                }
+            }
+            if valid_paths.is_empty() {
+                vec![".".to_string()]
+            } else {
+                valid_paths
+            }
         };
-        multi_executor.add_executor(Arc::new(mentalist::mcp::BuiltinMcp::filesystem(fs_paths)));
+        multi_executor.add_executor("mcp:filesystem".to_string(), Arc::new(mentalist::mcp::BuiltinMcp::filesystem(fs_paths))).await;
 
         if let Some(ref api_key) = config.firecrawl_api_key {
-            multi_executor.add_executor(Arc::new(mentalist::mcp::BuiltinMcp::firecrawl(api_key.clone())));
+            multi_executor.add_executor("mcp:firecrawl".to_string(), Arc::new(mentalist::mcp::BuiltinMcp::firecrawl(api_key.clone()))).await;
         }
 
+        // Issue 14: Ensure skills path exists
         let skills_path = PathBuf::from(&config.skills_path);
-        let skill_executor = tokio::select! {
-            res = SkillExecutor::new(skills_path.clone()) => match res {
-                Ok(e) => e,
-                Err(err) => {
-                    tracing::warn!("Skill executor failed to load from {:?}: {}. Using empty.", skills_path, err);
-                    SkillExecutor { skills_root: skills_path, skills: std::collections::HashMap::new() }
-                }
-            },
-            _ = tokio::time::sleep(Duration::from_secs(10)) => {
-                tracing::warn!("Skill executor initialization timeout, continuing with empty skills");
+        if !skills_path.exists() {
+            tracing::info!("Creating skills directory: {:?}", skills_path);
+            std::fs::create_dir_all(&skills_path)?;
+        }
+
+        let skill_executor = match SkillExecutor::new(skills_path.clone()).await {
+            Ok(e) => {
+                tracing::info!("Loaded {} skills from {:?}", e.skills.len(), skills_path);
+                e
+            }
+            Err(err) => {
+                tracing::error!("Skill executor initialization failed: {}. Continuing with empty skills.", err);
                 SkillExecutor { skills_root: skills_path, skills: std::collections::HashMap::new() }
             }
         };
         let skill_executor = Arc::new(skill_executor);
-        multi_executor.add_executor(skill_executor);
+        multi_executor.add_executor("skills".to_string(), skill_executor).await;
 
         let multi_executor = Arc::new(multi_executor);
         harness.add_middleware(Arc::new(ToolDiscoveryMiddleware::new(multi_executor.clone())));
+
+        // Issue 2: Validate tool discovery works
+        match multi_executor.list_tools().await {
+            Ok(tools) => tracing::info!("Tool discovery initialized: {} tools registered", tools.len()),
+            Err(e) => tracing::warn!("Initial tool discovery returned error: {}", e),
+        }
 
         let sessions_dir = PathBuf::from(&config.sessions_path);
         if !sessions_dir.exists() {
@@ -310,12 +356,14 @@ impl AgentManager {
             s
         });
 
-        let agent = DeepAgent::new(harness, state, multi_executor, memory_controller, scheduler);
+        let agent = DeepAgent::new(harness, state, multi_executor.clone(), memory_controller, scheduler);
         Ok(Self {
             agent,
+            multi_executor,
             event_tx,
             context_consumer: ContextConsumer::new(),
             config,
+            save_lock: Mutex::new(()),
         })
     }
 
@@ -352,6 +400,8 @@ impl AgentManager {
         let mut total_chunks = 0;
         let mut last_status = "Processing...".to_string();
 
+        let mut tool_results = Vec::new();
+
         while let Some(step_result) = stream.next().await {
             match step_result {
                 Ok(event) => {
@@ -370,6 +420,7 @@ impl AgentManager {
                         }
                         AgentStepEvent::ToolFinished(t, result) => {
                             tracing::debug!("Tool finished: {} -> {} bytes", t, result.len());
+                            tool_results.push((t.clone(), result.clone()));
                             let _ = self.event_tx.try_send(AgentEvent::Status(format!("Finished Tool: {}", t)));
                         }
                     }
@@ -385,7 +436,22 @@ impl AgentManager {
             tokio::task::yield_now().await;
         }
         
-        drop(stream); // Release borrow on self.agent for session saving
+        drop(stream); // Release borrow on self.agent
+
+        // Issue 7: Apply accumulated tool results to context
+        if !tool_results.is_empty() {
+            let mut current_ctx = (*self.agent.state.context).clone();
+            for (name, res) in tool_results {
+                current_ctx.items.push(MemoryItem {
+                    role: MemoryRole::Tool,
+                    content: res,
+                    timestamp: chrono::Utc::now().timestamp() as u64,
+                    metadata: serde_json::json!({"tool": name}),
+                });
+            }
+            self.agent.state.context = Arc::new(current_ctx);
+        }
+        
         let _ = self.save_current_session();
         let _ = self.event_tx.try_send(AgentEvent::Status("Idle".to_string()));
         Ok(())
@@ -400,6 +466,8 @@ impl AgentManager {
         match command {
             "/tools" => {
                 let _ = self.event_tx.try_send(AgentEvent::Status("Discovering tools...".into()));
+                // Issue 11: Refresh discovery by calling list_tools through the harness if possible, 
+                // or ensure the executor is up to date.
                 let tools = self.agent.executor.list_tools().await?;
                 let mut list = String::from("### Available Tools\n\n");
                 for t in tools {
@@ -511,6 +579,41 @@ impl AgentManager {
             "/exit" => {
                 let _ = self.event_tx.try_send(AgentEvent::Quit);
             }
+            "/mcp" => {
+                let parts: Vec<&str> = args_str.split_whitespace().collect();
+                let sub_cmd = if parts.is_empty() { "list" } else { parts[0] };
+                
+                match sub_cmd {
+                    "list" => {
+                        let executors = self.multi_executor.list_executors().await;
+                        let mut msg = String::from("### MCP Servers & Tools Status\n\n");
+                        msg.push_str("| Name | Status | State |\n");
+                        msg.push_str("| :--- | :--- | :--- |\n");
+                        for (name, enabled, status) in executors {
+                            let status_str = if enabled { "✅ Enabled" } else { "❌ Disabled" };
+                            msg.push_str(&format!("| `{}` | {} | {} |\n", name, status_str, status));
+                        }
+                        let _ = self.event_tx.try_send(AgentEvent::TextChunk(msg));
+                    }
+                    "enable" | "disable" => {
+                        if parts.len() < 2 {
+                            let _ = self.event_tx.try_send(AgentEvent::Error(format!("Usage: /mcp {} <name>", sub_cmd)));
+                            return Ok(());
+                        }
+                        let name = parts[1];
+                        let enabled = sub_cmd == "enable";
+                        if self.multi_executor.set_executor_enabled(name, enabled).await {
+                            let status_text = if enabled { "enabled" } else { "disabled" };
+                            let _ = self.event_tx.try_send(AgentEvent::TextChunk(format!("Executor `{}` is now {}.", name, status_text)));
+                        } else {
+                            let _ = self.event_tx.try_send(AgentEvent::Error(format!("Executor `{}` not found.", name)));
+                        }
+                    }
+                    _ => {
+                        let _ = self.event_tx.try_send(AgentEvent::Error("Usage: /mcp [list|enable <name>|disable <name>]".into()));
+                    }
+                }
+            }
             "/summarize" => {
                 let _ = self.event_tx.try_send(AgentEvent::Status("Optimizing context...".into()));
                 let before = self.agent.state.context.items.len();
@@ -579,10 +682,25 @@ impl AgentManager {
         let report = self.context_consumer.consume_with_limits(&root).await?;
         
         let mut count = 0;
-        for path in report.processed_files {
+        for path in report.processed_files.iter().take(50) { // Safety limit
             if let Ok(content) = tokio::fs::read_to_string(&path).await {
                 let filename = path.strip_prefix(&root).unwrap_or(&path);
-                let _ = self.agent.step(format!("Study this file and extract its core knowledge: {:?}\n\nCONTENT:\n{}", filename, content)).await?;
+                
+                // Issue 17: Process through agent and store summary in memory layer
+                let summary = self.agent.step(format!(
+                    "Extract and summarize the key knowledge from this file for long-term memory. Be concise but thorough.\n\nFilename: {:?}\n\nCONTENT:\n{}", 
+                    filename, content
+                )).await?;
+
+                let mut current_ctx = (*self.agent.state.context).clone();
+                current_ctx.items.push(MemoryItem {
+                    role: MemoryRole::System,
+                    content: format!("Knowledge extracted from {:?}:\n{}", filename, summary),
+                    timestamp: chrono::Utc::now().timestamp() as u64,
+                    metadata: serde_json::json!({"source": "consume", "file": filename}),
+                });
+                self.agent.state.context = Arc::new(current_ctx);
+                
                 count += 1;
             }
         }
@@ -590,12 +708,48 @@ impl AgentManager {
     }
 
     async fn review_vault(&mut self) -> Result<String> {
-        let _ = self.event_tx.try_send(AgentEvent::Status("Reading vault contents...".into()));
-        let report = self.agent.step("Perform an audit review of all files in the staging vault. Identify bugs, errors, and potential enhancements.".into()).await?;
+        let vault_path = Self::get_vault_path(&self.config, &self.agent.state.session_id);
+        
+        if !vault_path.exists() {
+            return Ok("Staging vault is empty (directory does not exist).".to_string());
+        }
+        
+        let mut vault_contents = String::new();
+        let mut files_found = 0;
+        
+        let mut entries = std::fs::read_dir(&vault_path)?;
+        while let Some(Ok(entry)) = entries.next() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    files_found += 1;
+                    vault_contents.push_str(&format!("### File: {}\n\n```\n{}\n```\n\n", path.display(), content));
+                }
+            }
+        }
+        
+        if files_found == 0 {
+            return Ok("Staging vault is empty (no files found).".to_string());
+        }
+
+        let _ = self.event_tx.try_send(AgentEvent::Status(format!("Auditing {} files in vault...", files_found)));
+        
+        // Issue 16: Actually pass vault contents to LLM
+        let report = self.agent.step(format!(
+            "Perform an audit review of these staged files in the vault. Identify bugs, architectural concerns, and potential improvements:\n\n{}", 
+            vault_contents
+        )).await?;
+        
         Ok(report)
     }
 
     pub fn save_session(&self, path: PathBuf) -> Result<()> {
+        let _lock = self.save_lock.try_lock(); // Issue 13: Prevent concurrent writes
+        if _lock.is_err() {
+            tracing::debug!("Session save already in progress, skipping.");
+            return Ok(());
+        }
+        
         let session = SessionFile {
             version: CURRENT_SESSION_VERSION,
             state: self.agent.state.clone(),
@@ -613,5 +767,17 @@ impl AgentManager {
     fn save_current_session(&self) -> Result<()> {
         let path = PathBuf::from(&self.config.sessions_path).join(format!("session_{}.json", self.agent.state.session_id));
         self.save_session(path)
+    }
+
+    // Issue 21: Centralized vault path resolution
+    pub fn get_vault_path(config: &AppConfig, session_id: &str) -> PathBuf {
+        match config.vault_path.as_ref() {
+            Some(p) => PathBuf::from(p),
+            None => {
+                PathBuf::from(&config.sessions_path)
+                    .join(session_id)
+                    .join("vault")
+            }
+        }
     }
 }

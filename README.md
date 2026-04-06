@@ -69,8 +69,9 @@ Gypsy provides a powerful, keyboard-driven interface with several helpful shortc
 
 Gypsy isn't just a chatbot—it's an operational workbench. Use these internal commands to manage your environment:
 
-| Command | Action |
-| :--- | :--- |
+| `/mcp list` | **Status Dashboard**: Real-time monitoring of all connected MCP servers and tools. |
+| `/mcp enable <name>` | **Hot-Plug**: Instantly enables a previously disabled MCP server or toolset. |
+| `/mcp disable <name>` | **Isolation**: Disables an MCP server, removing its tools from the agent's context. |
 | `/session list` | Lists all saved sessions (including dynamically timestamped ones). |
 | `/session switch <id>` | Instantly reloads the agent with the history and context of another session. |
 | `/consume` | **Study Mode**: Recursively walk the project directory and index it into local knowledge. |

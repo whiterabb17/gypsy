@@ -64,12 +64,26 @@ async fn ensure_ollama_ready(config: &AppConfig) -> Result<()> {
             .await?;
     }
 
-    // 3. Pre-load Models (Force initial 40s load to happen now instead of crashing later)
+    // 3. Pre-load Models (Force initial load to happen now instead of during execution)
     tracing::info!("Pre-loading LLM model: {}...", config.model_name);
-    let _ = ollama.generate(ollama_rs::generation::completion::request::GenerationRequest::new(config.model_name.clone(), "".to_string())).await;
+    let req = ollama_rs::generation::completion::request::GenerationRequest::new(
+        config.model_name.clone(), 
+        "test".to_string()
+    );
+    match ollama.generate(req).await {
+        Ok(_) => tracing::info!("LLM model pre-loaded successfully"),
+        Err(e) => tracing::warn!("LLM model pre-load failed (non-fatal): {}", e),
+    }
     
     tracing::info!("Pre-loading embedding model: {}...", config.embedding_model);
-    let _ = ollama.generate(ollama_rs::generation::completion::request::GenerationRequest::new(config.embedding_model.clone(), "".to_string())).await;
+    let req = ollama_rs::generation::completion::request::GenerationRequest::new(
+        config.embedding_model.clone(), 
+        "test".to_string()
+    );
+    match ollama.generate(req).await {
+        Ok(_) => tracing::info!("Embedding model pre-loaded successfully"),
+        Err(e) => tracing::warn!("Embedding model pre-load failed (non-fatal): {}", e),
+    }
 
     Ok(())
 }
@@ -378,8 +392,9 @@ async fn main() -> Result<()> {
                             state.follow_chat = true; // Reset scroll to bottom on new input
                             state.status = "Thinking...".to_string();
                             state.is_thinking = true;
-                            if let Err(_) = input_tx.try_send(input) {
-                                state.log.push(LogEntry::Error("Input channel full".into()));
+                            if let Err(e) = input_tx.try_send(input) {
+                                state.log.push(LogEntry::Error("Agent queue full - command dropped. Try again.".into()));
+                                tracing::warn!("Agent input queue full: {:?}", e);
                             }
                         }
                     }

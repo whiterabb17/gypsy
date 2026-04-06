@@ -36,8 +36,10 @@ impl ToolArgumentParser {
         // 1. Try JSON with validation against schema
         if let Ok(val) = serde_json::from_str(args_str) {
             if Self::validate_against_schema(&val, def).is_ok() {
+                tracing::debug!("Tool args parsed successfully as JSON for {}", def.name);
                 return Ok(val);
             }
+            tracing::debug!("Tool args for {} parsed as JSON but failed schema validation", def.name);
         }
 
         // 2. Try key=value with type coercion
@@ -56,23 +58,28 @@ impl ToolArgumentParser {
             if !map.is_empty() {
                 let val = serde_json::Value::Object(map);
                 if Self::validate_against_schema(&val, def).is_ok() {
+                    tracing::debug!("Tool args parsed successfully as key=value for {}", def.name);
                     return Ok(val);
                 }
+                tracing::debug!("Tool args for {} parsed as key=value but failed schema validation", def.name);
             }
             
             // 3. Single param positional
             if props.len() == 1 {
                 let key = props.keys().next().unwrap();
                 let param_schema = &props[key];
-                let typed_val = Self::coerce_type(args_str, param_schema)?;
-                let val = serde_json::json!({ key: typed_val });
-                if Self::validate_against_schema(&val, def).is_ok() {
-                    return Ok(val);
+                if let Ok(typed_val) = Self::coerce_type(args_str, param_schema) {
+                    let val = serde_json::json!({ key: typed_val });
+                    if Self::validate_against_schema(&val, def).is_ok() {
+                        tracing::debug!("Tool args parsed successfully as positional for {}: {}", def.name, key);
+                        return Ok(val);
+                    }
                 }
             }
         }
 
         // 4. Default raw coercion
+        tracing::warn!("Tool args for {} failed all structured parsing strategies. Falling back to raw string.", def.name);
         Ok(serde_json::json!(args_str))
     }
 

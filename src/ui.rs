@@ -141,7 +141,9 @@ pub fn ui(f: &mut Frame, state: &mut AppState) {
     let chat_content_height = estimate_height(&chat_text, chat_inner_width);
 
     if state.follow_chat {
-        state.log_scroll = chat_content_height.saturating_sub(chat_inner_height);
+        state.log_scroll = chat_content_height
+            .saturating_sub(chat_inner_height)
+            .min(chat_content_height);
     }
 
     let chat_title = if state.log_scroll > 0 {
@@ -273,7 +275,9 @@ pub fn ui(f: &mut Frame, state: &mut AppState) {
         let system_content_height = estimate_height(&system_text, system_inner_width);
 
         if state.follow_system {
-            state.system_log_scroll = system_content_height.saturating_sub(system_inner_height);
+            state.system_log_scroll = system_content_height
+                .saturating_sub(system_inner_height)
+                .min(system_content_height);
         }
 
         let system_title = if state.system_log_scroll > 0 {

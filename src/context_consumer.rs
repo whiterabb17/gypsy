@@ -76,16 +76,14 @@ impl ContextConsumer {
             return Ok(());
         }
 
-        let canonical = std::fs::canonicalize(dir)?;
+        let canonical = std::fs::canonicalize(dir)
+            .unwrap_or_else(|_| dir.to_path_buf());
+
         if visited.contains(&canonical) {
             tracing::debug!("Skipping visited directory loop: {}", dir.display());
             return Ok(());
         }
         visited.insert(canonical);
-
-        if !dir.is_dir() {
-            return Ok(());
-        }
 
         for entry in std::fs::read_dir(dir)? {
             let entry = match entry {
@@ -95,19 +93,25 @@ impl ContextConsumer {
                     continue;
                 }
             };
-            let path = entry.path();
             
+            let file_type = match entry.file_type() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+
+            let path = entry.path();
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            
             if name == "target" || name == "node_modules" || name == ".git" || name.starts_with('.') {
                 continue;
             }
 
-            if path.is_file() {
+            if file_type.is_file() {
                 let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default();
                 if self.config.allowed_extensions.contains(ext) {
                     files.push(path);
                 }
-            } else if path.is_dir() {
+            } else if file_type.is_dir() {
                 let _ = self._walk_dir_recursive(&path, files, visited, depth + 1);
             }
         }
