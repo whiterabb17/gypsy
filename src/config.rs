@@ -39,6 +39,7 @@ pub struct AppConfig {
     pub storage_path: String,
     pub sessions_path: String,
     pub vault_path: Option<String>,
+    #[serde(default)]
     pub session_id: String,
 
     // Tools
@@ -82,6 +83,7 @@ impl AppConfig {
             .set_default("skills_path", ".agent/skills").unwrap()
             .set_default("log_level", "info").unwrap()
             .set_default("model_context_window", 2048).unwrap()
+            .set_default("session_id", "").unwrap()
             .set_default("fallback_mode", "automatic").unwrap();
 
         // Environment overrides

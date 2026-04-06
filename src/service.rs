@@ -64,12 +64,19 @@ impl ServiceManager {
     }
 
     pub async fn ensure_models_pulled(&self, config: &AppConfig) -> GypsyResult<()> {
-        let ollama = ollama_rs::Ollama::new(
-            config.ollama_base_url.parse::<reqwest::Url>().map_err(|e| GypsyError::ConfigError(e.to_string()))?.host_str().unwrap_or("localhost").to_string(),
-            config.ollama_base_url.parse::<reqwest::Url>().map_err(|e| GypsyError::ConfigError(e.to_string()))?.port().unwrap_or(11434)
-        );
+        let url = config.ollama_base_url.parse::<reqwest::Url>().map_err(|e| GypsyError::ConfigError(e.to_string()))?;
+        let scheme = url.scheme();
+        let mut host_val = url.host_str().unwrap_or("127.0.0.1").to_string();
+        if host_val == "localhost" {
+            host_val = "127.0.0.1".to_string();
+        }
+        let base = format!("{}://{}", scheme, host_val);
+        let port = url.port().unwrap_or(11434);
         
-        let local_models = ollama.list_local_models().await.unwrap_or_default();
+        let ollama = ollama_rs::Ollama::new(base, port);
+        
+        // Capture specific errors during model inventory check to avoid silent failures
+        let local_models = ollama.list_local_models().await?;
         let model_names: Vec<String> = local_models.into_iter().map(|m| m.name).collect();
 
         if !model_names.contains(&config.model_name) && !model_names.iter().any(|n| n.starts_with(&config.model_name)) {

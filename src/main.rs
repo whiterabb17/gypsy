@@ -120,7 +120,7 @@ fn create_providers(config: &AppConfig, event_tx: mpsc::Sender<AgentEvent>) -> R
             let m = config.model_name.clone();
             let e = config.embedding_model.clone();
             let ctx = Some(config.model_context_window as u32);
-            let provider = Arc::new(mem_core::OllamaProvider::new(m, e, ctx));
+            let provider = Arc::new(mem_core::OllamaProvider::new(config.ollama_base_url.clone(), m, e, ctx));
             (
                 provider.clone() as Arc<dyn mentalist::ModelProvider>,
                 provider.clone() as Arc<dyn mem_core::EmbeddingProvider>,
@@ -136,7 +136,7 @@ fn create_providers(config: &AppConfig, event_tx: mpsc::Sender<AgentEvent>) -> R
         let m = config.model_name.clone(); // Generic fallback model
         let e = config.embedding_model.clone();
         let ctx = Some(config.model_context_window as u32);
-        let secondary = Arc::new(mem_core::OllamaProvider::new(m, e, ctx));
+        let secondary = Arc::new(mem_core::OllamaProvider::new(config.ollama_base_url.clone(), m, e, ctx));
         let fb = Arc::new(FallbackProvider {
             primary: primary_model,
             secondary,
