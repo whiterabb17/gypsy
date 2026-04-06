@@ -28,8 +28,12 @@ pub enum AgentEvent {
     TextChunk(String),
     MetricUpdate {
         tokens: usize,
+        input_tokens: usize,
+        output_tokens: usize,
         context_size: usize,
+        latency_ms: u128,
         step: String,
+        tool_name: Option<String>,
     },
     Error(String),
 }
@@ -47,8 +51,12 @@ impl Middleware for MonitoringMiddleware {
         let tokens: usize = req.context.items.iter().map(|i| self.token_counter.count_tokens(&i.content)).sum();
         let _ = self.tx.try_send(AgentEvent::MetricUpdate {
             tokens,
+            input_tokens: tokens,
+            output_tokens: 0,
             context_size: req.context.items.len(),
+            latency_ms: 0,
             step: "Thinking (LLM)".to_string(),
+            tool_name: None,
         });
         let _ = self.tx.try_send(AgentEvent::Status("Thinking...".to_string()));
         Ok(())
@@ -58,8 +66,12 @@ impl Middleware for MonitoringMiddleware {
         let tokens: usize = self.token_counter.count_tokens(&res.content);
         let _ = self.tx.try_send(AgentEvent::MetricUpdate {
             tokens,
+            input_tokens: 0, // Ideally we'd get these from the response if available
+            output_tokens: tokens,
             context_size: 0,
+            latency_ms: 0, // Will be updated by AgentManager if timed
             step: "Thinking Complete".to_string(),
+            tool_name: None,
         });
         let _ = self.tx.try_send(AgentEvent::Status("AI Responded".to_string()));
         Ok(())
@@ -69,8 +81,12 @@ impl Middleware for MonitoringMiddleware {
         let _ = self.tx.try_send(AgentEvent::Status(format!("Executing Tool: {}", tool.name)));
         let _ = self.tx.try_send(AgentEvent::MetricUpdate {
             tokens: 0,
+            input_tokens: 0,
+            output_tokens: 0,
             context_size: 0,
+            latency_ms: 0,
             step: format!("Tool: {}", tool.name),
+            tool_name: Some(tool.name.clone()),
         });
         Ok(())
     }
@@ -186,7 +202,7 @@ impl AgentManager {
             std::fs::create_dir_all(&skills_path).ok();
         }
 
-        if let Ok(skill_executor) = SkillExecutor::new(skills_path.clone()).await {
+        if let Ok(skill_executor) = SkillExecutor::new(skills_path.clone(), config.to_security_config()).await {
             multi_executor.add_executor("skills".to_string(), Arc::new(skill_executor)).await;
         }
 
@@ -236,8 +252,8 @@ impl AgentManager {
             "/exit".to_string(),
             "/summarize".to_string(),
             "/mcp".to_string(),
+            "/skills".to_string(),
         ];
-        
         let tools = self.agent.executor.list_tools().await?;
         for t in tools {
             commands.push(format!("/{}", t.name));
@@ -249,6 +265,7 @@ impl AgentManager {
     pub async fn name(&self) -> &str { "Gypsy" }
 
     pub async fn run_step(&mut self, input: String) -> Result<()> {
+        let start = std::time::Instant::now();
         if input.starts_with('/') {
             let res = self.handle_command(&input).await;
             let _ = self.save_current_session();
@@ -257,7 +274,7 @@ impl AgentManager {
 
         use mentalist::agent::AgentStepEvent;
         
-        let mut stream = Box::pin(self.agent.step_stream(input, mentalist::agent::StepConfig::default()));
+        let mut stream = Box::pin(self.agent.step_stream(input, self.config.to_agent_config()));
         let mut tool_results = Vec::new();
         
         while let Some(step_result) = stream.next().await {
@@ -288,6 +305,17 @@ impl AgentManager {
         }
         
         drop(stream);
+
+        let duration = start.elapsed().as_millis();
+        let _ = self.event_tx.try_send(AgentEvent::MetricUpdate {
+            tokens: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            context_size: self.agent.state.context.items.len(),
+            latency_ms: duration,
+            step: "Step Complete".to_string(),
+            tool_name: None,
+        });
 
         // Commit accumulated tool results
         if !tool_results.is_empty() {
@@ -383,6 +411,22 @@ impl AgentManager {
             }
             "/exit" => {
                 let _ = self.event_tx.try_send(AgentEvent::Quit);
+            }
+            "/skills" => {
+                let parts: Vec<&str> = args_str.split_whitespace().collect();
+                if !parts.is_empty() && parts[0] == "reload" {
+                    let _ = self.event_tx.try_send(AgentEvent::Status("Reloading skills...".into()));
+                    let skills_path = PathBuf::from(&self.config.skills_path);
+                    let security = self.config.to_security_config();
+                    if let Ok(skill_executor) = SkillExecutor::new(skills_path, security).await {
+                        self.multi_executor.add_executor("skills".to_string(), Arc::new(skill_executor)).await;
+                        let _ = self.event_tx.try_send(AgentEvent::TextChunk("Skills reloaded successfully. 🚀\n".into()));
+                    } else {
+                        let _ = self.event_tx.try_send(AgentEvent::Error("Failed to reload skills.".into()));
+                    }
+                } else {
+                    let _ = self.event_tx.try_send(AgentEvent::Error("Usage: /skills reload".into()));
+                }
             }
             "/mcp" => {
                 let parts: Vec<&str> = args_str.split_whitespace().collect();

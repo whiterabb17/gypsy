@@ -31,6 +31,7 @@ impl SessionManager {
     pub fn load_session(&self, session_id: &str) -> Result<DeepAgentState> {
         let path = self.get_session_path(session_id);
         if !path.exists() {
+            tracing::info!("No existing session found for {}, initializing new state.", session_id);
             return Ok(DeepAgentState {
                 session_id: session_id.to_string(),
                 context: Arc::new(Context { items: vec![] }),
@@ -39,30 +40,44 @@ impl SessionManager {
         }
 
         let data = std::fs::read_to_string(&path)?;
-        match serde_json::from_str::<SessionFile>(&data) {
-            Ok(mut session) => {
-                tracing::info!("Loaded session version {} from {}", session.version, path.display());
-                session.state.sandbox_root = std::env::current_dir()?;
-                Ok(session.state)
-            }
-            Err(parse_err) => {
-                // Migration logic: handle legacy format
-                if let Ok(mut legacy_state) = serde_json::from_str::<DeepAgentState>(&data) {
-                    tracing::info!("Migrating legacy session to version {}", CURRENT_SESSION_VERSION);
-                    legacy_state.sandbox_root = std::env::current_dir()?;
-                    Ok(legacy_state)
-                } else {
-                    tracing::warn!("Failed to parse session {}: {}. Creating backup.", path.display(), parse_err);
-                    let backup_path = path.with_extension("json.corrupt");
-                    let _ = std::fs::copy(&path, &backup_path);
-                    Ok(DeepAgentState {
-                        session_id: session_id.to_string(),
-                        context: Arc::new(Context { items: vec![] }),
-                        sandbox_root: std::env::current_dir()?,
-                    })
+        
+        // Attempt to parse new versioned format first
+        if let Ok(mut session) = serde_json::from_str::<SessionFile>(&data) {
+            match session.version {
+                CURRENT_SESSION_VERSION => {
+                    tracing::info!("Loaded session v{} from {}", session.version, path.display());
+                    session.state.sandbox_root = std::env::current_dir()?;
+                    return Ok(session.state);
+                }
+                v if v > CURRENT_SESSION_VERSION => {
+                    return Err(anyhow::anyhow!("Session version {} is from a newer version of Gypsy. Please update.", v));
+                }
+                _ => {
+                    tracing::info!("Migrating session from v{} to v{}", session.version, CURRENT_SESSION_VERSION);
+                    session.state.sandbox_root = std::env::current_dir()?;
+                    // Future migration logic would go here
+                    return Ok(session.state);
                 }
             }
         }
+
+        // Fallback: Handle legacy format (pre-versioning)
+        if let Ok(mut legacy_state) = serde_json::from_str::<DeepAgentState>(&data) {
+            tracing::info!("Migrating legacy (unversioned) session to v{}", CURRENT_SESSION_VERSION);
+            legacy_state.sandbox_root = std::env::current_dir()?;
+            return Ok(legacy_state);
+        }
+
+        // Last resort: backup and start fresh
+        tracing::warn!("Failed to parse session {}. Moving to backup and starting fresh.", path.display());
+        let backup_path = path.with_extension("json.corrupt");
+        let _ = std::fs::copy(&path, &backup_path);
+        
+        Ok(DeepAgentState {
+            session_id: session_id.to_string(),
+            context: Arc::new(Context { items: vec![] }),
+            sandbox_root: std::env::current_dir()?,
+        })
     }
 
     pub fn save_session(&self, state: &DeepAgentState) -> Result<()> {

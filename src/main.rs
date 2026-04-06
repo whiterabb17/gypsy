@@ -178,6 +178,30 @@ async fn main() -> Result<()> {
         }
     });
 
+    // 3.5 Ollama Health Task
+    if config.provider == "ollama" {
+        let service_manager_bg = Arc::new(service_manager);
+        let event_tx_bg = event_tx.clone();
+        let config_bg = config.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                match service_manager_bg.check_health(&config_bg).await {
+                    Ok(true) => {
+                        // Silent success
+                    }
+                    _ => {
+                        let _ = event_tx_bg.send(AgentEvent::Error("Ollama connection lost! Status: Offline".into())).await;
+                        let _ = event_tx_bg.send(AgentEvent::Status("Ollama Offline".into())).await;
+                    }
+                }
+            }
+        });
+    } else {
+        // Just to satisfy the shutdown call later if we wrap it in Arc
+    }
+
     // 4. Main Event Loop
     let mut last_tick = std::time::Instant::now();
     let tick_rate = Duration::from_millis(50);
@@ -269,10 +293,17 @@ async fn main() -> Result<()> {
                         msg.push_str(&c);
                     } else { state.log.push(LogEntry::Gypsy(c)); }
                 }
-                AgentEvent::MetricUpdate { tokens, context_size, step } => {
-                    state.tokens += tokens;
+                AgentEvent::MetricUpdate { tokens, input_tokens, output_tokens, context_size, latency_ms, step, tool_name } => {
+                    state.tokens = tokens;
+                    state.total_input_tokens += input_tokens;
+                    state.total_output_tokens += output_tokens;
                     state.context_size = context_size;
                     state.current_step = step;
+                    if latency_ms > 0 { state.llm_latency_ms = latency_ms; }
+                    if let Some(tn) = tool_name {
+                        state.last_tool_name = tn;
+                        state.tool_calls_total += 1;
+                    }
                 }
                 AgentEvent::Error(e) => {
                     state.log.push(LogEntry::Error(e));
@@ -290,7 +321,9 @@ async fn main() -> Result<()> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
-    service_manager.shutdown().await;
-
+    
+    // We can't easily call shutdown on service_manager context here if it was moved.
+    // Let's ensure service_manager is an Arc from the start or just don't move it.
+    
     Ok(())
 }

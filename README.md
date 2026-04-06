@@ -13,7 +13,7 @@
 
 - **🛡️ Hardened Execution**: Multi-layered sandbox support (Wasm/Docker) with strict **4GB RAM limits**, **CPU Fueling**, and a **Malicious Command Blocker**.
 - **🧠 Resilient Long-Term Memory**: Automatic fact extraction and RAG-based context injection via the **MindPalace** core.
-- **🌐 Built-in Web Search**: Integrated **Firecrawl** and **Tavily** MCP support for advanced web scraping and markdown data retrieval.
+- **🌐 Built-in Web Search**: Integrated **Firecrawl** MCP support for advanced web scraping and markdown data retrieval.
 - **📂 Secure Filesystem MCP**: Native, standard-compliant filesystem tools restricted to your project root or workspace.
 - **📦 Staging Vault Architecture**: All file modifications are staged in a secure vault; changes only touch your project root after manual approval.
 - **🧩 Extensible Skills**: Drop new Python/JS scripts into the `skills/` folder to instantly "teach" the agent new capabilities.

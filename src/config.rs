@@ -128,4 +128,19 @@ impl AppConfig {
         config.max_tokens_per_dream = self.max_tokens_per_dream;
         config
     }
+
+    pub fn to_security_config(&self) -> mentalist::config::SecurityConfig {
+        let mut config = mentalist::config::SecurityConfig::default();
+        config.max_memory_mb = self.ram_limit_mb;
+        config.enforce_sandboxing = self.sandbox_mode != "local";
+        // Map other relevant fields if needed
+        config
+    }
+
+    pub fn to_agent_config(&self) -> mentalist::config::AgentConfig {
+        let mut config = mentalist::config::AgentConfig::default();
+        config.max_context_items = self.max_context_items;
+        config.timeout_seconds = 300; // Default or add to AppConfig
+        config
+    }
 }

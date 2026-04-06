@@ -39,6 +39,14 @@ pub struct AppState {
     pub system_log_scroll: u16,
     pub follow_chat: bool,
     pub follow_system: bool,
+    
+    // Detailed Metrics
+    pub tool_calls_total: usize,
+    pub last_tool_name: String,
+    pub last_tool_duration_ms: u128,
+    pub total_input_tokens: usize,
+    pub total_output_tokens: usize,
+    pub llm_latency_ms: u128,
 }
 
 impl AppState {
@@ -59,6 +67,12 @@ impl AppState {
             system_log_scroll: 0,
             follow_chat: true,
             follow_system: true,
+            tool_calls_total: 0,
+            last_tool_name: "None".to_string(),
+            last_tool_duration_ms: 0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            llm_latency_ms: 0,
         }
     }
 }
@@ -227,22 +241,60 @@ pub fn ui(f: &mut Frame, state: &mut AppState) {
         Style::default()
     };
 
-    let status_para = Paragraph::new(state.status.as_str())
-        .style(status_style)
-        .block(Block::default().borders(Borders::ALL).title("System Status"));
-    f.render_widget(status_para, right_chunks[0]);
+    // 1. Diagnostics Panel (System + LLM)
+    let diag_text = vec![
+        Line::from(vec![
+            Span::styled("Status: ", Style::default().fg(Color::Gray)),
+            Span::styled(state.status.as_str(), status_style),
+        ]),
+        Line::from(vec![
+            Span::styled("Phase:  ", Style::default().fg(Color::Gray)),
+            Span::raw(state.current_step.as_str()),
+        ]),
+        Line::from(vec![
+            Span::styled("Latency: ", Style::default().fg(Color::Gray)),
+            Span::styled(format!("{}ms", state.llm_latency_ms), Style::default().fg(Color::Yellow)),
+        ]),
+    ];
+    let diag_para = Paragraph::new(diag_text)
+        .block(Block::default().borders(Borders::ALL).title(" Diagnostics "));
+    f.render_widget(diag_para, right_chunks[0]);
 
-    let step_para = Paragraph::new(state.current_step.as_str())
-        .block(Block::default().borders(Borders::ALL).title("Current Phase"));
-    f.render_widget(step_para, right_chunks[1]);
+    // 2. Token Metrics
+    let token_text = vec![
+        Line::from(vec![
+            Span::styled("Total: ", Style::default().fg(Color::Gray)),
+            Span::raw(format!("{}", state.tokens)),
+        ]),
+        Line::from(vec![
+            Span::styled("In:    ", Style::default().fg(Color::Gray)),
+            Span::styled(format!("{}", state.total_input_tokens), Style::default().fg(Color::Blue)),
+            Span::styled(" | Out: ", Style::default().fg(Color::Gray)),
+            Span::styled(format!("{}", state.total_output_tokens), Style::default().fg(Color::Green)),
+        ]),
+    ];
+    let token_para = Paragraph::new(token_text)
+        .block(Block::default().borders(Borders::ALL).title(" Token Usage "));
+    f.render_widget(token_para, right_chunks[1]);
 
-    let token_para = Paragraph::new(format!("{}", state.tokens))
-        .block(Block::default().borders(Borders::ALL).title("Total Tokens Used"));
-    f.render_widget(token_para, right_chunks[2]);
-
-    let context_para = Paragraph::new(format!("{}", state.context_size))
-        .block(Block::default().borders(Borders::ALL).title("Context Items Count"));
-    f.render_widget(context_para, right_chunks[3]);
+    // 3. Memory & Tools
+    let mem_text = vec![
+        Line::from(vec![
+            Span::styled("Context Size: ", Style::default().fg(Color::Gray)),
+            Span::raw(format!("{}", state.context_size)),
+        ]),
+        Line::from(vec![
+            Span::styled("Tool Count:   ", Style::default().fg(Color::Gray)),
+            Span::styled(format!("{}", state.tool_calls_total), Style::default().fg(Color::Magenta)),
+        ]),
+        Line::from(vec![
+            Span::styled("Last Tool:     ", Style::default().fg(Color::Gray)),
+            Span::styled(state.last_tool_name.as_str(), Style::default().fg(Color::Cyan)),
+        ]),
+    ];
+    let mem_para = Paragraph::new(mem_text)
+        .block(Block::default().borders(Borders::ALL).title(" Capacity & Tools "));
+    f.render_widget(mem_para, right_chunks[2]);
 
     if state.show_debug {
         // Render Under-the-Hood Logs
