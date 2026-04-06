@@ -348,6 +348,7 @@ impl AgentManager {
                 });
             }
         }
+        memory_controller.optimize_resilient(&mut current_ctx).await?;
         state.context = Arc::new(current_ctx);
 
         let scheduler = mp_middleware.dreamer.as_ref().map(|d| {
@@ -440,7 +441,7 @@ impl AgentManager {
 
         // Issue 7: Apply accumulated tool results to context
         if !tool_results.is_empty() {
-            let mut current_ctx = (*self.agent.state.context).clone();
+            let current_ctx = Arc::make_mut(&mut self.agent.state.context);
             for (name, res) in tool_results {
                 current_ctx.items.push(MemoryItem {
                     role: MemoryRole::Tool,
@@ -449,7 +450,6 @@ impl AgentManager {
                     metadata: serde_json::json!({"tool": name}),
                 });
             }
-            self.agent.state.context = Arc::new(current_ctx);
         }
         
         let _ = self.save_current_session();
@@ -466,8 +466,8 @@ impl AgentManager {
         match command {
             "/tools" => {
                 let _ = self.event_tx.try_send(AgentEvent::Status("Discovering tools...".into()));
-                // Issue 11: Refresh discovery by calling list_tools through the harness if possible, 
-                // or ensure the executor is up to date.
+                // Issue 11: Direct executor call is purposeful.
+                // ToolDiscoveryMiddleware is for AI reasoning; manual listing bypasses it.
                 let tools = self.agent.executor.list_tools().await?;
                 let mut list = String::from("### Available Tools\n\n");
                 for t in tools {
@@ -652,7 +652,7 @@ impl AgentManager {
         
         match self.agent.executor.execute(name, args.clone()).await {
             Ok(res) => {
-                let mut current_ctx = (*self.agent.state.context).clone();
+                let current_ctx = Arc::make_mut(&mut self.agent.state.context);
                 current_ctx.items.push(MemoryItem {
                     role: MemoryRole::User,
                     content: format!("MANUAL TOOL CALL: /{} {}", name, args_str),
@@ -665,7 +665,6 @@ impl AgentManager {
                     timestamp: chrono::Utc::now().timestamp() as u64,
                     metadata: serde_json::json!({"tool": name}),
                 });
-                self.agent.state.context = Arc::new(current_ctx);
                 
                 let _ = self.event_tx.try_send(AgentEvent::TextChunk(format!("\n#### Tool Result: {}\n---\n{}\n---\n", name, res)));
             }
@@ -692,14 +691,13 @@ impl AgentManager {
                     filename, content
                 )).await?;
 
-                let mut current_ctx = (*self.agent.state.context).clone();
+                let current_ctx = Arc::make_mut(&mut self.agent.state.context);
                 current_ctx.items.push(MemoryItem {
                     role: MemoryRole::System,
                     content: format!("Knowledge extracted from {:?}:\n{}", filename, summary),
                     timestamp: chrono::Utc::now().timestamp() as u64,
                     metadata: serde_json::json!({"source": "consume", "file": filename}),
                 });
-                self.agent.state.context = Arc::new(current_ctx);
                 
                 count += 1;
             }
