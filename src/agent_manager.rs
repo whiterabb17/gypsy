@@ -123,6 +123,28 @@ impl AgentManager {
         let vault_path = Self::get_vault_path(&config, &session_id);
         std::fs::create_dir_all(&vault_path).ok();
 
+        let model_metadata = provider.discover_metadata().await;
+        let context_window = if config.model_context_window > 0 {
+            config.model_context_window
+        } else {
+            model_metadata.context_window
+        };
+
+        // Dynamic scaling of mental parameters based on context window
+        // Standard: 2048 -> 50 items. 32k -> ~800 items. 
+        // We use a conservative heuristic: (context_window / 40).clamp(20, 500)
+        let scaled_max_items = (context_window / 40).clamp(20, 500);
+        let scaled_summary_interval = (scaled_max_items as f32 * 0.8) as usize;
+
+        tracing::info!(
+            "Dynamic Context Scaling: Window={}, MaxItems={}, SummaryInterval={}", 
+            context_window, scaled_max_items, scaled_summary_interval
+        );
+
+        let mut mp_config = config.to_mindpalace_config();
+        mp_config.max_context_items = scaled_max_items;
+        mp_config.summary_interval = scaled_summary_interval;
+
         let mp_middleware = MindPalaceMiddleware::hardened(
             storage.clone(),
             provider.clone(),
@@ -131,10 +153,11 @@ impl AgentManager {
             session_id.clone(),
             config.embedding_dimension as usize,
             vault_path,
+            Some(mp_config),
         );
         
         let brain = mp_middleware.brain.clone();
-        tracing::info!("Brain initialized for session: {}", session_id);
+        tracing::info!("Brain initialized for session {} with scaled context: items={}", session_id, scaled_max_items);
 
         let memory_controller = Arc::new(ResilientMemoryController::new(
             brain.clone(),
