@@ -102,6 +102,7 @@ pub struct AgentManager {
     pub event_tx: mpsc::Sender<AgentEvent>,
     pub context_consumer: ContextConsumer,
     pub session_manager: SessionManager,
+    pub token_counter: Arc<dyn TokenCounter>,
     pub config: AppConfig,
 }
 
@@ -269,6 +270,7 @@ impl AgentManager {
             event_tx,
             context_consumer: ContextConsumer::new(),
             session_manager,
+            token_counter,
             config,
         })
     }
@@ -339,8 +341,9 @@ impl AgentManager {
         drop(stream);
 
         let duration = start.elapsed().as_millis();
+        let total_context_tokens: usize = self.agent.state.context.items.iter().map(|i| self.token_counter.count_tokens(&i.content)).sum();
         let _ = self.event_tx.try_send(AgentEvent::MetricUpdate {
-            tokens: 0,
+            tokens: total_context_tokens,
             input_tokens: 0,
             output_tokens: 0,
             context_size: self.agent.state.context.items.len(),

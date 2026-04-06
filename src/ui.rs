@@ -25,6 +25,7 @@ pub enum LogEntry {
 pub struct AppState {
     pub log: AllocRingBuffer<LogEntry>,
     pub tokens: usize,
+    pub max_tokens: usize,
     pub context_size: usize,
     pub current_step: String,
     pub input_buffer: String,
@@ -66,6 +67,7 @@ impl AppState {
             current_step: "Waiting for input".to_string(),
             log: AllocRingBuffer::new(1000),
             tokens: 0,
+            max_tokens: 0,
             context_size: 0,
             input_buffer: String::new(),
             is_thinking: false,
@@ -119,7 +121,8 @@ pub fn ui(f: &mut Frame, state: &mut AppState) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(0),
-            Constraint::Length(if state.progress.is_some() { 1 } else { 0 }),
+            Constraint::Length(1), // Context Bar (Always)
+            Constraint::Length(if state.progress.is_some() { 1 } else { 0 }), // Progress Bar (Optional)
         ])
         .split(chunks[0]);
 
@@ -237,13 +240,43 @@ pub fn ui(f: &mut Frame, state: &mut AppState) {
             .border_style(if state.fallback_pending { Style::default().fg(Color::LightMagenta) } else { Style::default() }));
     f.render_widget(input, left_chunks[1]);
 
-    // Global Progress Bar
+    // Global Context Usage Bar
+    let context_ratio = if state.max_tokens > 0 {
+        (state.tokens as f64 / state.max_tokens as f64).min(1.0)
+    } else {
+        0.0
+    };
+
+    let context_color = if context_ratio >= 0.8 {
+        Color::Red
+    } else if context_ratio >= 0.6 {
+        Color::Yellow
+    } else {
+        Color::Cyan
+    };
+
+    let context_label = format!(
+        " Context: {}/{} ({:.1}%) ",
+        state.tokens,
+        state.max_tokens,
+        context_ratio * 100.0
+    );
+
+    let context_gauge = Gauge::default()
+        .block(Block::default())
+        .gauge_style(Style::default().fg(context_color).bg(Color::Black))
+        .ratio(context_ratio)
+        .label(context_label);
+    
+    f.render_widget(context_gauge, main_chunks[1]);
+
+    // Global Task Progress Bar (Rendered below context if active)
     if let Some(progress) = state.progress {
         let gauge = Gauge::default()
             .block(Block::default())
-            .gauge_style(Style::default().fg(Color::Cyan).bg(Color::Black))
+            .gauge_style(Style::default().fg(Color::Magenta).bg(Color::Black))
             .ratio(progress as f64);
-        f.render_widget(gauge, main_chunks[1]);
+        f.render_widget(gauge, main_chunks[2]);
     }
 
     // Right Column: Dashboard
@@ -311,7 +344,7 @@ pub fn ui(f: &mut Frame, state: &mut AppState) {
     let token_text = vec![
         Line::from(vec![
             Span::styled("Total: ", Style::default().fg(Color::Gray)),
-            Span::raw(format!("{}", state.tokens)),
+            Span::raw(format!("{}", state.total_input_tokens + state.total_output_tokens)),
         ]),
         Line::from(vec![
             Span::styled("In:    ", Style::default().fg(Color::Gray)),

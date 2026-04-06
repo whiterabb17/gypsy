@@ -203,6 +203,7 @@ async fn main() -> Result<()> {
     .await?;
 
     let mut state = AppState::new();
+    state.max_tokens = config.model_context_window;
     state.available_commands = manager.get_available_commands().await?;
     state.log.push(LogEntry::Gypsy(
         "Gypsy agent is ready. Session initialized and secured. 🔮".into(),
