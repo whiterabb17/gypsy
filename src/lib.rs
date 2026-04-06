@@ -4,3 +4,5 @@ pub mod ui;
 pub mod error;
 pub mod command_parser;
 pub mod context_consumer;
+pub mod session;
+pub mod service;

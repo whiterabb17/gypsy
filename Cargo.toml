@@ -47,6 +47,11 @@ ringbuffer = "0.15"
 jsonschema = "0.17"
 ruvector-core = "2.1"
 ruvector-graph = "2.0"
+secrecy = { version = "0.8", features = ["serde"] }
+tracing-appender = "0.2"
+metrics = "0.22"
+ignore = "0.4"
+config = "0.14"
 
 [patch."https://github.com/whiterabb17/mentalist.git"]
 mentalist = { path = "../mentalist" }

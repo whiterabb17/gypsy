@@ -1,5 +1,7 @@
 use serde::Deserialize;
+use secrecy::Secret;
 use mem_core::MindPalaceConfig;
+use std::collections::HashMap;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct AppConfig {
@@ -8,9 +10,9 @@ pub struct AppConfig {
     pub model_name: String,
     pub embedding_model: String,
     pub ollama_base_url: String,
-    pub anthropic_api_key: Option<String>,
-    pub openai_api_key: Option<String>,
-    pub gemini_api_key: Option<String>,
+    pub anthropic_api_key: Option<Secret<String>>,
+    pub openai_api_key: Option<Secret<String>>,
+    pub gemini_api_key: Option<Secret<String>>,
     pub embedding_dimension: usize,
 
     // MindPalace Core
@@ -30,7 +32,8 @@ pub struct AppConfig {
     pub ram_limit_mb: u64,
     pub cpu_limit_percent: u64,
     pub wasm_module_path: Option<String>,
-    pub wasm_env_vars: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub wasm_env_vars: HashMap<String, String>,
 
     // Storage & Session
     pub storage_path: String,
@@ -39,9 +42,11 @@ pub struct AppConfig {
     pub session_id: String,
 
     // Tools
-    pub mcp_servers: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub mcp_servers: HashMap<String, String>,
+    #[serde(default)]
     pub mcp_filesystem_paths: Vec<String>,
-    pub firecrawl_api_key: Option<String>,
+    pub firecrawl_api_key: Option<Secret<String>>,
     pub skills_path: String,
     pub log_level: String,
     pub model_context_window: usize,
@@ -52,77 +57,64 @@ pub struct AppConfig {
 impl AppConfig {
     pub fn from_env() -> Self {
         dotenvy::dotenv().ok();
-        
-        let mut storage_path = std::env::var("STORAGE_PATH").unwrap_or_else(|_| ".agent/storage".to_string());
-        
+
+        let mut s = config::Config::builder()
+            // Defaults
+            .set_default("provider", "ollama").unwrap()
+            .set_default("model_name", "llama3").unwrap()
+            .set_default("embedding_model", "nomic-embed-text").unwrap()
+            .set_default("ollama_base_url", "http://localhost:11434").unwrap()
+            .set_default("embedding_dimension", 1536).unwrap()
+            .set_default("similarity_threshold", 0.85).unwrap()
+            .set_default("compression_ratio", 0.6).unwrap()
+            .set_default("max_context_items", 100).unwrap()
+            .set_default("base_ttl_seconds", 3600).unwrap()
+            .set_default("summary_interval", 15).unwrap()
+            .set_default("max_tokens_per_dream", 50000).unwrap()
+            .set_default("failure_threshold", 3).unwrap()
+            .set_default("sandbox_mode", "local").unwrap()
+            .set_default("docker_image", "alpine:latest").unwrap()
+            .set_default("ram_limit_mb", 4096).unwrap()
+            .set_default("cpu_limit_percent", 50).unwrap()
+            .set_default("storage_path", ".agent/storage").unwrap()
+            .set_default("sessions_path", ".agent/sessions").unwrap()
+            .set_default("skills_path", ".agent/skills").unwrap()
+            .set_default("log_level", "info").unwrap()
+            .set_default("model_context_window", 2048).unwrap();
+
+        // Environment overrides
+        s = s.add_source(config::Environment::default().separator("__"));
+
+        let mut config: AppConfig = s.build().unwrap().try_deserialize().unwrap();
+
+        // Post-processing for dynamic defaults
+        if config.session_id.is_empty() {
+            let now = chrono::Utc::now();
+            config.session_id = format!("gypsy_{}", now.format("%Y%m%d_%H%M%S"));
+        }
+
+        // Debug assertions override
         #[cfg(debug_assertions)]
         {
             if std::env::var("STORAGE_PATH").is_err() {
-                storage_path = "./memory".to_string();
+                config.storage_path = "./memory".to_string();
             }
         }
 
-        let mut wasm_env_vars = std::collections::HashMap::new();
+        // Manual collection of prefixed env vars not handled by config-rs easily
         for (k, v) in std::env::vars() {
             if k.starts_with("WASM_ENV_") {
-                wasm_env_vars.insert(k.trim_start_matches("WASM_ENV_").to_string(), v);
+                config.wasm_env_vars.insert(k.trim_start_matches("WASM_ENV_").to_string(), v);
+            } else if k.starts_with("MCP_SERVER_") {
+                config.mcp_servers.insert(k.trim_start_matches("MCP_SERVER_").to_lowercase(), v);
             }
         }
-
-        let mcp_filesystem_paths = std::env::var("MCP_FS_PATHS")
-            .map(|v| v.split(',').map(|s| s.trim().to_string()).collect())
-            .unwrap_or_default();
-
-        Self {
-            provider: std::env::var("PROVIDER").unwrap_or_else(|_| "ollama".to_string()),
-            model_name: std::env::var("MODEL_NAME").unwrap_or_else(|_| "llama3".to_string()),
-            embedding_model: std::env::var("EMBEDDING_MODEL").unwrap_or_else(|_| "nomic-embed-text".to_string()),
-            ollama_base_url: std::env::var("OLLAMA_BASE_URL").unwrap_or_else(|_| "http://localhost:11434".to_string()),
-            anthropic_api_key: std::env::var("ANTHROPIC_API_KEY").ok(),
-            openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
-            gemini_api_key: std::env::var("GEMINI_API_KEY").ok(),
-            embedding_dimension: std::env::var("EMBEDDING_DIMENSION").ok().and_then(|v| v.parse().ok()).unwrap_or(1536),
-
-            similarity_threshold: std::env::var("SIMILARITY_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(0.85),
-            compression_ratio: std::env::var("COMPRESSION_RATIO").ok().and_then(|v| v.parse().ok()).unwrap_or(0.6),
-            max_context_items: std::env::var("MAX_CONTEXT_ITEMS").ok().and_then(|v| v.parse().ok()).unwrap_or(100),
-            base_ttl_seconds: std::env::var("BASE_TTL_SECONDS").ok().and_then(|v| v.parse().ok()).unwrap_or(3600),
-            summary_interval: std::env::var("SUMMARY_INTERVAL").ok().and_then(|v| v.parse().ok()).unwrap_or(15),
-            max_tokens_per_dream: std::env::var("MAX_TOKENS_PER_DREAM").ok().and_then(|v| v.parse().ok()).unwrap_or(50000),
-
-            failure_threshold: std::env::var("FAILURE_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(3),
-
-            sandbox_mode: std::env::var("SANDBOX_MODE").unwrap_or_else(|_| "local".to_string()),
-            docker_image: std::env::var("DOCKER_IMAGE").unwrap_or_else(|_| "alpine:latest".to_string()),
-            ram_limit_mb: std::env::var("RAM_LIMIT_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(4096), // 4GB default
-            cpu_limit_percent: std::env::var("CPU_LIMIT_PERCENT").ok().and_then(|v| v.parse().ok()).unwrap_or(50),
-            wasm_module_path: std::env::var("WASM_MODULE_PATH").ok(),
-            wasm_env_vars,
-
-            storage_path,
-            sessions_path: std::env::var("SESSIONS_PATH").unwrap_or_else(|_| ".agent/sessions".to_string()),
-            vault_path: std::env::var("VAULT_PATH").ok(),
-            session_id: std::env::var("SESSION_ID").unwrap_or_else(|_| {
-                let now = chrono::Utc::now();
-                format!("gypsy_{}", now.format("%Y%m%d_%H%M%S"))
-            }),
-
-            // MCP Servers from env (format: MCP_SERVER_NAME=command args)
-            mcp_servers: std::env::vars()
-                .filter(|(k, _)| k.starts_with("MCP_SERVER_"))
-                .map(|(k, v)| (k.trim_start_matches("MCP_SERVER_").to_lowercase(), v))
-                .collect(),
-            mcp_filesystem_paths,
-            firecrawl_api_key: std::env::var("FIRECRAWL_API_KEY").ok(),
-            skills_path: std::env::var("SKILLS_PATH").unwrap_or_else(|_| ".agent/skills".to_string()),
-            log_level: std::env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
-            model_context_window: std::env::var("MODEL_CONTEXT_WINDOW")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(2048),
-            personality_instructions: std::env::var("GYPSY_PERSONALITY").ok(),
-            system_prompt: std::env::var("GYPSY_SYSTEM_PROMPT").ok(),
+        
+        if let Ok(fs_paths) = std::env::var("MCP_FS_PATHS") {
+            config.mcp_filesystem_paths = fs_paths.split(',').map(|s| s.trim().to_string()).collect();
         }
+
+        config
     }
 
     pub fn to_mindpalace_config(&self) -> MindPalaceConfig {
