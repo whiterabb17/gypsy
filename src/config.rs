@@ -1,6 +1,6 @@
-use serde::Deserialize;
-use secrecy::Secret;
 use mem_core::MindPalaceConfig;
+use secrecy::Secret;
+use serde::Deserialize;
 use std::collections::HashMap;
 
 #[derive(Debug, Deserialize, Clone)]
@@ -62,29 +62,52 @@ impl AppConfig {
 
         let mut s = config::Config::builder()
             // Defaults
-            .set_default("provider", "ollama").unwrap()
-            .set_default("model_name", "qwen2.5-coder:3b").unwrap()
-            .set_default("embedding_model", "nomic-embed-text").unwrap()
-            .set_default("ollama_base_url", "http://127.0.0.1:11434").unwrap()
-            .set_default("embedding_dimension", 768).unwrap()
-            .set_default("similarity_threshold", 0.85).unwrap()
-            .set_default("compression_ratio", 0.6).unwrap()
-            .set_default("max_context_items", 100).unwrap()
-            .set_default("base_ttl_seconds", 3600).unwrap()
-            .set_default("summary_interval", 15).unwrap()
-            .set_default("max_tokens_per_dream", 50000).unwrap()
-            .set_default("failure_threshold", 3).unwrap()
-            .set_default("sandbox_mode", "local").unwrap()
-            .set_default("docker_image", "alpine:latest").unwrap()
-            .set_default("ram_limit_mb", 1024).unwrap()
-            .set_default("cpu_limit_percent", 50).unwrap()
-            .set_default("storage_path", ".agent/storage").unwrap()
-            .set_default("sessions_path", ".agent/sessions").unwrap()
-            .set_default("skills_path", ".agent/skills").unwrap()
-            .set_default("log_level", "info").unwrap()
-            .set_default("model_context_window", 0).unwrap()
-            .set_default("session_id", "").unwrap()
-            .set_default("fallback_mode", "automatic").unwrap();
+            .set_default("provider", "ollama")
+            .unwrap()
+            .set_default("model_name", "qwen2.5-coder:3b")
+            .unwrap()
+            .set_default("embedding_model", "nomic-embed-text")
+            .unwrap()
+            .set_default("ollama_base_url", "http://127.0.0.1:11434")
+            .unwrap()
+            .set_default("embedding_dimension", 768)
+            .unwrap()
+            .set_default("similarity_threshold", 0.85)
+            .unwrap()
+            .set_default("compression_ratio", 0.6)
+            .unwrap()
+            .set_default("max_context_items", 100)
+            .unwrap()
+            .set_default("base_ttl_seconds", 3600)
+            .unwrap()
+            .set_default("summary_interval", 15)
+            .unwrap()
+            .set_default("max_tokens_per_dream", 50000)
+            .unwrap()
+            .set_default("failure_threshold", 3)
+            .unwrap()
+            .set_default("sandbox_mode", "local")
+            .unwrap()
+            .set_default("docker_image", "alpine:latest")
+            .unwrap()
+            .set_default("ram_limit_mb", 1024)
+            .unwrap()
+            .set_default("cpu_limit_percent", 50)
+            .unwrap()
+            .set_default("storage_path", ".agent/storage")
+            .unwrap()
+            .set_default("sessions_path", ".agent/sessions")
+            .unwrap()
+            .set_default("skills_path", ".agent/skills")
+            .unwrap()
+            .set_default("log_level", "info")
+            .unwrap()
+            .set_default("model_context_window", 32768)
+            .unwrap()
+            .set_default("session_id", "")
+            .unwrap()
+            .set_default("fallback_mode", "automatic")
+            .unwrap();
 
         // Environment overrides
         s = s.add_source(config::Environment::default().separator("__"));
@@ -108,14 +131,19 @@ impl AppConfig {
         // Manual collection of prefixed env vars not handled by config-rs easily
         for (k, v) in std::env::vars() {
             if k.starts_with("WASM_ENV_") {
-                config.wasm_env_vars.insert(k.trim_start_matches("WASM_ENV_").to_string(), v);
+                config
+                    .wasm_env_vars
+                    .insert(k.trim_start_matches("WASM_ENV_").to_string(), v);
             } else if k.starts_with("MCP_SERVER_") {
-                config.mcp_servers.insert(k.trim_start_matches("MCP_SERVER_").to_lowercase(), v);
+                config
+                    .mcp_servers
+                    .insert(k.trim_start_matches("MCP_SERVER_").to_lowercase(), v);
             }
         }
-        
+
         if let Ok(fs_paths) = std::env::var("MCP_FS_PATHS") {
-            config.mcp_filesystem_paths = fs_paths.split(',').map(|s| s.trim().to_string()).collect();
+            config.mcp_filesystem_paths =
+                fs_paths.split(',').map(|s| s.trim().to_string()).collect();
         }
 
         config
