@@ -13,74 +13,20 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use secrecy::ExposeSecret;
 use ringbuffer::RingBuffer;
+use once_cell::sync::Lazy;
 
-use futures_util::stream::BoxStream;
 
-// --- Fallback Provider ---
-
-struct FallbackProvider {
-    pub primary: Arc<dyn mentalist::ModelProvider>,
-    pub secondary: Arc<dyn mentalist::ModelProvider>,
-    pub event_tx: mpsc::Sender<AgentEvent>,
-    pub is_using_secondary: AtomicBool,
-}
-
-#[async_trait::async_trait]
-impl mem_core::LlmClient for FallbackProvider {
-    async fn completion(&self, prompt: &str) -> anyhow::Result<String> {
-        if self.is_using_secondary.load(Ordering::Relaxed) {
-            self.secondary.completion(prompt).await
-        } else {
-            self.primary.completion(prompt).await
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl mentalist::ModelProvider for FallbackProvider {
-    async fn complete(&self, req: mentalist::Request) -> anyhow::Result<mentalist::Response> {
-        if self.is_using_secondary.load(Ordering::Relaxed) {
-            return self.secondary.complete(req).await;
-        }
-
-        match self.primary.complete(req.clone()).await {
-            Ok(res) => Ok(res),
-            Err(e) => {
-                tracing::warn!("Primary provider failed: {}. Triggering fallback check...", e);
-                let _ = self.event_tx.try_send(AgentEvent::RequestFallback);
-                Err(e)
-            }
-        }
-    }
-
-    async fn stream_complete(&self, req: mentalist::Request) -> anyhow::Result<BoxStream<'static, anyhow::Result<mentalist::ResponseChunk>>> {
-        if self.is_using_secondary.load(Ordering::Relaxed) {
-            return self.secondary.stream_complete(req).await;
-        }
-
-        match self.primary.stream_complete(req.clone()).await {
-            Ok(stream) => Ok(stream),
-            Err(e) => {
-                tracing::warn!("Primary provider stream failed: {}. Triggering fallback check...", e);
-                let _ = self.event_tx.try_send(AgentEvent::RequestFallback);
-                Err(e)
-            }
-        }
-    }
-}
 
 struct ProviderStack {
     pub model: Arc<dyn mentalist::ModelProvider>,
     pub embeddings: Arc<dyn mem_core::EmbeddingProvider>,
     pub token_counter: Arc<dyn mem_core::TokenCounter>,
-    pub fallback_handler: Option<Arc<FallbackProvider>>,
 }
 
-fn create_providers(config: &AppConfig, event_tx: mpsc::Sender<AgentEvent>) -> Result<ProviderStack> {
+fn create_providers(config: &AppConfig, _event_tx: mpsc::Sender<AgentEvent>) -> Result<ProviderStack> {
     let (primary_model, embeddings, token_counter): (
         Arc<dyn mentalist::ModelProvider>,
         Arc<dyn mem_core::EmbeddingProvider>,
@@ -129,27 +75,7 @@ fn create_providers(config: &AppConfig, event_tx: mpsc::Sender<AgentEvent>) -> R
         }
     };
 
-    let mut fallback_handler = None;
-
-    // If primary isn't ollama, wrap in FallbackProvider with local Ollama as secondary
-    let model = if config.provider != "ollama" {
-        let m = config.model_name.clone(); // Generic fallback model
-        let e = config.embedding_model.clone();
-        let ctx = Some(config.model_context_window as u32);
-        let secondary = Arc::new(mem_core::OllamaProvider::new(config.ollama_base_url.clone(), m, e, ctx));
-        let fb = Arc::new(FallbackProvider {
-            primary: primary_model,
-            secondary,
-            event_tx,
-            is_using_secondary: AtomicBool::new(false),
-        });
-        fallback_handler = Some(fb.clone());
-        fb as Arc<dyn mentalist::ModelProvider>
-    } else {
-        primary_model
-    };
-
-    Ok(ProviderStack { model, embeddings, token_counter, fallback_handler })
+    Ok(ProviderStack { model: primary_model, embeddings, token_counter })
 }
 
 // --- Log Layer ---
@@ -195,6 +121,12 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for UiLogLayer {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // 0. Industrial Persistence: Eagerly load resource-intensive models on main thread.
+    // This moves 1.5GB+ allocation and parsing to the start, preventing stack overflows.
+    Lazy::force(&mem_core::STATIC_TOKENIZER);
+    #[cfg(feature = "wasm-tools")]
+    Lazy::force(&mentalist::executor::ENGINE);
+
     // 0. Initial Setup
     let config = AppConfig::from_env();
     
@@ -346,19 +278,6 @@ async fn main() -> Result<()> {
                             }
                         }
                     }
-                    KeyCode::Char('y') | KeyCode::Char('Y') if state.fallback_pending => {
-                        state.fallback_pending = false;
-                        state.log.push(LogEntry::Info("Switching to local fallback provider...".into()));
-                        
-                        // Set the atomic flag in the FallbackProvider
-                        if let Some(fb) = &providers.fallback_handler {
-                             fb.is_using_secondary.store(true, Ordering::Relaxed);
-                        }
-                    }
-                    KeyCode::Char('n') | KeyCode::Char('N') if state.fallback_pending => {
-                        state.fallback_pending = false;
-                        state.log.push(LogEntry::Warn("Fallback rejected by user.".into()));
-                    }
                     KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => break 'main_loop,
                     KeyCode::Char(c) => {
                         if state.input_buffer.len() < 4096 { state.input_buffer.push(c); }
@@ -411,16 +330,6 @@ async fn main() -> Result<()> {
                     if let Some(tn) = tool_name {
                         state.last_tool_name = tn;
                         state.tool_calls_total += 1;
-                    }
-                }
-                AgentEvent::RequestFallback => {
-                    if config.fallback_mode == "automatic" {
-                        state.log.push(LogEntry::Warn("Primary failed. Auto-switching to Ollama...".into()));
-                        if let Some(fb) = &providers.fallback_handler {
-                             fb.is_using_secondary.store(true, Ordering::Relaxed);
-                        }
-                    } else {
-                        state.fallback_pending = true;
                     }
                 }
                 AgentEvent::Progress(p) => {

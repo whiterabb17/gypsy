@@ -39,7 +39,6 @@ pub enum AgentEvent {
     Progress(f32),
     PhaseProgress(f32),
     ToolResult { name: String, success: bool },
-    RequestFallback,
     Error(String),
 }
 
@@ -129,6 +128,9 @@ impl AgentManager {
         } else {
             model_metadata.context_window
         };
+
+        // Propagate the discovered context window to the provider itself
+        provider.set_context_window(context_window);
 
         // Dynamic scaling of mental parameters based on context window
         // Standard: 2048 -> 50 items. 32k -> ~800 items. 

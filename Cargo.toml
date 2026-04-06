@@ -1,7 +1,11 @@
 [package]
 name = "gypsy"
-version = "0.1.9"
+version = "0.1.10"
 edition = "2021"
+
+[features]
+default = ["wasm-tools"]
+wasm-tools = ["mentalist/wasm-tools"]
 
 [dependencies]
 # Local Agent & Memory Crates (Remote Git Versions)

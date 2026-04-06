@@ -391,7 +391,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63044e1ae8e69f3b5a92c736ca6269b8d12fa7efe39bf34ddb06d102cf0e2cab"
 dependencies = [
  "memchr",
- "regex-automata",
  "serde",
 ]
 
@@ -848,7 +847,7 @@ dependencies = [
  "log",
  "pulley-interpreter",
  "regalloc2",
- "rustc-hash 2.1.2",
+ "rustc-hash",
  "serde",
  "smallvec",
  "target-lexicon",
@@ -1267,17 +1266,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fancy-regex"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "531e46835a22af56d1e3b66f04844bed63158bc094a628bec1d321d9b4c44bf2"
-dependencies = [
- "bit-set",
- "regex-automata",
- "regex-syntax",
-]
-
-[[package]]
 name = "fastrand"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1581,7 +1569,7 @@ dependencies = [
 
 [[package]]
 name = "gypsy"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2321,7 +2309,7 @@ dependencies = [
  "base64 0.21.7",
  "bytecount",
  "clap",
- "fancy-regex 0.11.0",
+ "fancy-regex",
  "fraction",
  "getrandom 0.2.17",
  "iso8601",
@@ -2539,7 +2527,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 1.0.69",
- "tiktoken-rs",
  "tokio",
  "tokio-retry",
  "tracing",
@@ -2716,6 +2703,7 @@ dependencies = [
  "mem-resilience",
  "mem-retriever",
  "mem-session",
+ "once_cell",
  "reqwest 0.12.28",
  "reqwest-eventsource",
  "ruvector-core",
@@ -3427,7 +3415,7 @@ dependencies = [
  "pin-project-lite",
  "quinn-proto",
  "quinn-udp",
- "rustc-hash 2.1.2",
+ "rustc-hash",
  "rustls 0.23.37",
  "socket2 0.6.3",
  "thiserror 2.0.18",
@@ -3447,7 +3435,7 @@ dependencies = [
  "lru-slab",
  "rand 0.9.2",
  "ring",
- "rustc-hash 2.1.2",
+ "rustc-hash",
  "rustls 0.23.37",
  "rustls-pki-types",
  "slab",
@@ -3655,7 +3643,7 @@ dependencies = [
  "bumpalo",
  "hashbrown 0.15.5",
  "log",
- "rustc-hash 2.1.2",
+ "rustc-hash",
  "smallvec",
 ]
 
@@ -3888,12 +3876,6 @@ name = "rustc-demangle"
 version = "0.1.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b50b8869d9fc858ce7266cce0194bd74df58b9d0e3f6df3a9fc8eb470d95c09d"
-
-[[package]]
-name = "rustc-hash"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
 
 [[package]]
 name = "rustc-hash"
@@ -4642,21 +4624,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
 dependencies = [
  "cfg-if",
-]
-
-[[package]]
-name = "tiktoken-rs"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a19830747d9034cd9da43a60eaa8e552dfda7712424aebf187b7a60126bae0d"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "bstr",
- "fancy-regex 0.13.0",
- "lazy_static",
- "regex",
- "rustc-hash 1.1.0",
 ]
 
 [[package]]
