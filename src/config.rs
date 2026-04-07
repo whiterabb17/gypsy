@@ -54,6 +54,7 @@ pub struct AppConfig {
     pub personality_instructions: Option<String>,
     pub system_prompt: Option<String>,
     pub fallback_mode: String,
+    pub mcp_initialize_timeout_seconds: u64,
 }
 
 impl AppConfig {
@@ -107,6 +108,8 @@ impl AppConfig {
             .set_default("session_id", "")
             .unwrap()
             .set_default("fallback_mode", "automatic")
+            .unwrap()
+            .set_default("mcp_initialize_timeout_seconds", 60)
             .unwrap();
 
         // Environment overrides

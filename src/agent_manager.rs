@@ -209,23 +209,24 @@ impl AgentManager {
                     let cmd = parts[0].clone();
                     let args = parts[1..].to_vec();
                     tracing::info!("Registering MCP server: {} -> {} {:?}", name, cmd, args);
-                    multi_executor.add_executor(format!("mcp:{}", name), Arc::new(McpExecutor::new(cmd, args))).await;
+                    multi_executor.add_executor(format!("mcp:{}", name), Arc::new(McpExecutor::new(cmd, args).with_timeout(std::time::Duration::from_secs(config.mcp_initialize_timeout_seconds)))).await;
                 }
             }
         }
 
         let fs_paths = if config.mcp_filesystem_paths.is_empty() {
-            vec![".".to_string()]
+            vec![std::env::current_dir()?.to_string_lossy().to_string()]
         } else {
             config.mcp_filesystem_paths.iter()
-                .filter(|p| PathBuf::from(p).exists())
-                .cloned()
+                .map(|p| PathBuf::from(p))
+                .filter(|p| p.exists())
+                .map(|p| p.to_string_lossy().to_string())
                 .collect::<Vec<_>>()
         };
-        multi_executor.add_executor("mcp:filesystem".to_string(), Arc::new(mentalist::mcp::BuiltinMcp::filesystem(fs_paths))).await;
+        multi_executor.add_executor("mcp:filesystem".to_string(), Arc::new(mentalist::mcp::BuiltinMcp::filesystem(fs_paths).with_timeout(std::time::Duration::from_secs(config.mcp_initialize_timeout_seconds)))).await;
 
         if let Some(api_key) = &config.firecrawl_api_key {
-            multi_executor.add_executor("mcp:firecrawl".to_string(), Arc::new(mentalist::mcp::BuiltinMcp::firecrawl(api_key.expose_secret().clone()))).await;
+            multi_executor.add_executor("mcp:firecrawl".to_string(), Arc::new(mentalist::mcp::BuiltinMcp::firecrawl(api_key.expose_secret().clone()).with_timeout(std::time::Duration::from_secs(config.mcp_initialize_timeout_seconds)))).await;
         }
 
         let skills_path = PathBuf::from(&config.skills_path);
