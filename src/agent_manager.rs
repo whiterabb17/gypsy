@@ -75,6 +75,8 @@ pub enum AgentEvent {
 pub struct SkillInfo {
     pub name: String,
     pub description: String,
+    pub path: PathBuf,
+    pub content: String,
 }
 
 pub struct AgentManager {
@@ -297,6 +299,7 @@ impl AgentManager {
                 max_steps: config.max_steps,
                 timeout_seconds: config.mcp_initialize_timeout_seconds * 10,
             },
+            middlewares: vec![Arc::new(mp_middleware.clone())],
         });
 
         let mut discovered_skills = Vec::new();
@@ -306,20 +309,38 @@ impl AgentManager {
                     let skill_md = entry.path().join("SKILL.md");
                     if skill_md.exists() {
                         if let Ok(content) = std::fs::read_to_string(&skill_md) {
-                            if let Some(mut meta) = Self::parse_skill_metadata(&content) {
-                                // agentskills.io requirement: name MUST match parent directory name
-                                if let Some(folder_name) =
-                                    entry.path().file_name().and_then(|n| n.to_str())
-                                {
-                                    if meta.name != folder_name {
-                                        tracing::warn!(
-                                            "Skill name mismatch for folder {}: got {} in SKILL.md",
-                                            folder_name,
-                                            meta.name
-                                        );
-                                    }
-                                    meta.name = folder_name.to_string();
-                                }
+                            if let Some((name, description)) = Self::parse_skill_metadata(&content) {
+                                let folder_name = entry.path().file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
+                                let meta = SkillInfo {
+                                    name: folder_name.to_string(),
+                                    description: description.clone(),
+                                    path: entry.path(),
+                                    content: content.clone(),
+                                };
+                                
+                                // Register as a Mentalist Tool
+                                let skill_name = meta.name.clone();
+                                let skill_desc = meta.description.clone();
+                                let instructions_clone = meta.content.clone();
+                                
+                                let skill_tool = mentalist::tools::Skill {
+                                    name: skill_name,
+                                    description: format!("Skill: {}. Use this to retrieve specialized instructions or workflows for this domain.", skill_desc),
+                                    parameters: serde_json::json!({
+                                        "type": "object",
+                                        "properties": {
+                                            "task_context": { "type": "string", "description": "Specific sub-task you need guidance on." }
+                                        }
+                                    }),
+                                    handler: std::sync::Arc::new(move |_| {
+                                        let instructions = instructions_clone.clone();
+                                        Box::pin(async move {
+                                            Ok(serde_json::json!({ "instructions": instructions }))
+                                        })
+                                    }),
+                                };
+                                
+                                let _ = multi_executor.add_tool(std::sync::Arc::new(skill_tool));
                                 discovered_skills.push(meta);
                             }
                         }
@@ -343,7 +364,7 @@ impl AgentManager {
         })
     }
 
-    fn parse_skill_metadata(content: &str) -> Option<SkillInfo> {
+    fn parse_skill_metadata(content: &str) -> Option<(String, String)> {
         if !content.starts_with("---") {
             return None;
         }
@@ -370,10 +391,7 @@ impl AgentManager {
         }
 
         if let (Some(n), Some(d)) = (name, description) {
-            Some(SkillInfo {
-                name: n,
-                description: d,
-            })
+            Some((n, d))
         } else {
             None
         }
@@ -770,6 +788,11 @@ impl AgentManager {
 
     pub fn save_current_session(&self) -> GypsyResult<()> {
         Ok(())
+    }
+
+    /// Shuts down the agent and its background processes gracefully.
+    pub async fn shutdown(&self) -> anyhow::Result<()> {
+        self.runtime.shutdown().await
     }
 
     pub fn get_vault_path(config: &AppConfig, session_id: &str) -> PathBuf {

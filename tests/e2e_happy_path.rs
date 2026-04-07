@@ -46,6 +46,7 @@ impl ModelProvider for HappyModel {
                 tool_calls: vec![ToolCall {
                     name: "echo".to_string(),
                     arguments: serde_json::json!({"msg": "system-online"}),
+                    id: "test-id".to_string(),
                 }],
                 usage: None,
             });
@@ -79,6 +80,7 @@ impl ModelProvider for HappyModel {
                 tool_call_delta: Some(ToolCallDelta {
                     name: Some(tool.name),
                     arguments_delta: Some(tool.arguments.to_string()),
+                    id: Some(tool.id.clone()),
                 }),
                 usage: None,
                 is_final: true,
