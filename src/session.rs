@@ -2,13 +2,13 @@ use std::path::PathBuf;
 use serde::{Serialize, Deserialize};
 use anyhow::Result;
 use std::sync::Arc;
-use mentalist::DeepAgentState;
+use mentalist::AgentState;
 use mem_core::Context;
 
 #[derive(Serialize, Deserialize)]
 pub struct SessionFile {
     pub version: u32,
-    pub state: DeepAgentState,
+    pub state: AgentState,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -39,14 +39,16 @@ impl SessionManager {
         self.sessions_dir.join(format!("session_{}.json", session_id))
     }
 
-    pub fn load_session(&self, session_id: &str) -> Result<DeepAgentState> {
+    pub fn load_session(&self, session_id: &str) -> Result<AgentState> {
         let path = self.get_session_path(session_id);
         if !path.exists() {
             tracing::info!("No existing session found for {}, initializing new state.", session_id);
-            return Ok(DeepAgentState {
+            return Ok(AgentState {
                 session_id: session_id.to_string(),
+                goal: None,
                 context: Arc::new(Context { items: vec![] }),
                 sandbox_root: std::env::current_dir()?,
+                is_complete: false,
             });
         }
 
@@ -73,7 +75,7 @@ impl SessionManager {
         }
 
         // Fallback: Handle legacy format (pre-versioning)
-        if let Ok(mut legacy_state) = serde_json::from_str::<DeepAgentState>(&data) {
+        if let Ok(mut legacy_state) = serde_json::from_str::<AgentState>(&data) {
             tracing::info!("Migrating legacy (unversioned) session to v{}", CURRENT_SESSION_VERSION);
             legacy_state.sandbox_root = std::env::current_dir()?;
             return Ok(legacy_state);
@@ -84,14 +86,16 @@ impl SessionManager {
         let backup_path = path.with_extension("json.corrupt");
         let _ = std::fs::copy(&path, &backup_path);
         
-        Ok(DeepAgentState {
+        Ok(AgentState {
             session_id: session_id.to_string(),
+            goal: None,
             context: Arc::new(Context { items: vec![] }),
             sandbox_root: std::env::current_dir()?,
+            is_complete: false,
         })
     }
 
-    pub fn save_session(&self, state: &DeepAgentState) -> Result<()> {
+    pub fn save_session(&self, state: &AgentState) -> Result<()> {
         let path = self.get_session_path(&state.session_id);
         let session = SessionFile {
             version: CURRENT_SESSION_VERSION,
@@ -104,13 +108,6 @@ impl SessionManager {
         
         std::fs::write(&temp_path, data)?;
         std::fs::rename(temp_path, path)?;
-        Ok(())
-    }
-
-    pub fn save_metrics(&self, session_id: &str, metrics: &SessionMetrics) -> Result<()> {
-        let path = self.sessions_dir.join(format!("metrics_{}.json", session_id));
-        let data = serde_json::to_string_pretty(metrics)?;
-        std::fs::write(path, data)?;
         Ok(())
     }
 

@@ -33,10 +33,4 @@ pub enum GypsyError {
     Mentalist(String),
 }
 
-impl From<mentalist::error::MentalistError> for GypsyError {
-    fn from(e: mentalist::error::MentalistError) -> Self {
-        GypsyError::Mentalist(e.to_string())
-    }
-}
-
 pub type GypsyResult<T> = Result<T, GypsyError>;

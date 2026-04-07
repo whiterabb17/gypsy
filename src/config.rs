@@ -38,6 +38,7 @@ pub struct AppConfig {
     // Storage & Session
     pub storage_path: String,
     pub sessions_path: String,
+    pub mcp_root_path: String,
     pub vault_path: Option<String>,
     #[serde(default)]
     pub session_id: String,
@@ -54,7 +55,9 @@ pub struct AppConfig {
     pub personality_instructions: Option<String>,
     pub system_prompt: Option<String>,
     pub fallback_mode: String,
+    pub enable_ddg_search: bool,
     pub mcp_initialize_timeout_seconds: u64,
+    pub max_steps: usize,
 }
 
 impl AppConfig {
@@ -99,6 +102,8 @@ impl AppConfig {
             .unwrap()
             .set_default("sessions_path", ".agent/sessions")
             .unwrap()
+            .set_default("mcp_root_path", ".agent/mcp")
+            .unwrap()
             .set_default("skills_path", ".agent/skills")
             .unwrap()
             .set_default("log_level", "info")
@@ -109,7 +114,11 @@ impl AppConfig {
             .unwrap()
             .set_default("fallback_mode", "automatic")
             .unwrap()
+            .set_default("enable_ddg_search", true)
+            .unwrap()
             .set_default("mcp_initialize_timeout_seconds", 60)
+            .unwrap()
+            .set_default("max_steps", 10)
             .unwrap();
 
         // Environment overrides

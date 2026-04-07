@@ -367,7 +367,7 @@ dependencies = [
 
 [[package]]
 name = "brain"
-version = "0.2.4"
+version = "0.2.8"
 dependencies = [
  "anyhow",
  "mem-bridge",
@@ -391,6 +391,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63044e1ae8e69f3b5a92c736ca6269b8d12fa7efe39bf34ddb06d102cf0e2cab"
 dependencies = [
  "memchr",
+ "regex-automata",
  "serde",
 ]
 
@@ -847,7 +848,7 @@ dependencies = [
  "log",
  "pulley-interpreter",
  "regalloc2",
- "rustc-hash",
+ "rustc-hash 2.1.2",
  "serde",
  "smallvec",
  "target-lexicon",
@@ -1266,10 +1267,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "fastrand"
-version = "2.4.0"
+name = "fancy-regex"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a043dc74da1e37d6afe657061213aa6f425f855399a11d3463c6ecccc4dfda1f"
+checksum = "531e46835a22af56d1e3b66f04844bed63158bc094a628bec1d321d9b4c44bf2"
+dependencies = [
+ "bit-set",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
+name = "fastrand"
+version = "2.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 
 [[package]]
 name = "fd-lock"
@@ -1593,6 +1605,7 @@ dependencies = [
  "mem-micro",
  "mem-offloader",
  "mem-personality",
+ "mem-planner",
  "mem-resilience",
  "mem-retriever",
  "mem-session",
@@ -1609,6 +1622,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shlex",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -2309,7 +2323,7 @@ dependencies = [
  "base64 0.21.7",
  "bytecount",
  "clap",
- "fancy-regex",
+ "fancy-regex 0.11.0",
  "fraction",
  "getrandom 0.2.17",
  "iso8601",
@@ -2479,7 +2493,7 @@ checksum = "4facc753ae494aeb6e3c22f839b158aebd4f9270f55cd3c79906c45476c47ab4"
 
 [[package]]
 name = "mem-bridge"
-version = "0.2.4"
+version = "0.2.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2492,8 +2506,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "mem-broker"
+version = "0.2.8"
+dependencies = [
+ "anyhow",
+ "fs4",
+ "mem-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "mem-compactor"
-version = "0.2.4"
+version = "0.2.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2508,7 +2535,7 @@ dependencies = [
 
 [[package]]
 name = "mem-core"
-version = "0.2.4"
+version = "0.2.8"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2527,6 +2554,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "tiktoken-rs",
  "tokio",
  "tokio-retry",
  "tracing",
@@ -2536,7 +2564,7 @@ dependencies = [
 
 [[package]]
 name = "mem-dreamer"
-version = "0.2.4"
+version = "0.2.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2552,7 +2580,7 @@ dependencies = [
 
 [[package]]
 name = "mem-extractor"
-version = "0.2.4"
+version = "0.2.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2568,7 +2596,7 @@ dependencies = [
 
 [[package]]
 name = "mem-micro"
-version = "0.2.4"
+version = "0.2.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2582,7 +2610,7 @@ dependencies = [
 
 [[package]]
 name = "mem-offloader"
-version = "0.2.4"
+version = "0.2.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2596,7 +2624,7 @@ dependencies = [
 
 [[package]]
 name = "mem-personality"
-version = "0.2.4"
+version = "0.2.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2609,8 +2637,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "mem-planner"
+version = "0.2.8"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "mem-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "mem-resilience"
-version = "0.2.4"
+version = "0.2.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2626,7 +2669,7 @@ dependencies = [
 
 [[package]]
 name = "mem-retriever"
-version = "0.2.4"
+version = "0.2.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2643,7 +2686,7 @@ dependencies = [
 
 [[package]]
 name = "mem-session"
-version = "0.2.4"
+version = "0.2.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2682,7 +2725,7 @@ dependencies = [
 
 [[package]]
 name = "mentalist"
-version = "0.3.3"
+version = "0.3.5"
 dependencies = [
  "anyhow",
  "async-recursion",
@@ -2693,6 +2736,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "mem-bridge",
+ "mem-broker",
  "mem-compactor",
  "mem-core",
  "mem-dreamer",
@@ -2700,10 +2744,12 @@ dependencies = [
  "mem-micro",
  "mem-offloader",
  "mem-personality",
+ "mem-planner",
  "mem-resilience",
  "mem-retriever",
  "mem-session",
  "once_cell",
+ "regex",
  "reqwest 0.12.28",
  "reqwest-eventsource",
  "ruvector-core",
@@ -3415,7 +3461,7 @@ dependencies = [
  "pin-project-lite",
  "quinn-proto",
  "quinn-udp",
- "rustc-hash",
+ "rustc-hash 2.1.2",
  "rustls 0.23.37",
  "socket2 0.6.3",
  "thiserror 2.0.18",
@@ -3435,7 +3481,7 @@ dependencies = [
  "lru-slab",
  "rand 0.9.2",
  "ring",
- "rustc-hash",
+ "rustc-hash 2.1.2",
  "rustls 0.23.37",
  "rustls-pki-types",
  "slab",
@@ -3643,7 +3689,7 @@ dependencies = [
  "bumpalo",
  "hashbrown 0.15.5",
  "log",
- "rustc-hash",
+ "rustc-hash 2.1.2",
  "smallvec",
 ]
 
@@ -3876,6 +3922,12 @@ name = "rustc-demangle"
 version = "0.1.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b50b8869d9fc858ce7266cce0194bd74df58b9d0e3f6df3a9fc8eb470d95c09d"
+
+[[package]]
+name = "rustc-hash"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
 
 [[package]]
 name = "rustc-hash"
@@ -4624,6 +4676,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "tiktoken-rs"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a19830747d9034cd9da43a60eaa8e552dfda7712424aebf187b7a60126bae0d"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "bstr",
+ "fancy-regex 0.13.0",
+ "lazy_static",
+ "regex",
+ "rustc-hash 1.1.0",
 ]
 
 [[package]]

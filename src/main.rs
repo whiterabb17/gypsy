@@ -1,5 +1,6 @@
 use gypsy::agent_manager::{AgentEvent, AgentManager};
 use gypsy::config::AppConfig;
+use gypsy::prefs::PrefsManager;
 use gypsy::service::ServiceManager;
 use gypsy::ui::{ui, AppState, LogEntry};
 
@@ -9,7 +10,6 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use once_cell::sync::Lazy;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use ringbuffer::RingBuffer;
 use secrecy::ExposeSecret;
@@ -40,8 +40,8 @@ fn create_providers(
                 .context("ANTHROPIC_API_KEY missing")?
                 .expose_secret()
                 .clone();
-            let model = config.model_name.clone();
-            let provider = Arc::new(mem_core::AnthropicProvider::new(key, model));
+            let model_name = config.model_name.clone();
+            let provider = Arc::new(mem_core::AnthropicProvider::new(key, model_name));
             (
                 provider.clone() as Arc<dyn mentalist::ModelProvider>,
                 provider.clone() as Arc<dyn mem_core::EmbeddingProvider>,
@@ -55,8 +55,8 @@ fn create_providers(
                 .context("OPENAI_API_KEY missing")?
                 .expose_secret()
                 .clone();
-            let model = config.model_name.clone();
-            let provider = Arc::new(mem_core::OpenAiProvider::new(key, model));
+            let model_name = config.model_name.clone();
+            let provider = Arc::new(mem_core::OpenAiProvider::new(key, model_name));
             (
                 provider.clone() as Arc<dyn mentalist::ModelProvider>,
                 provider.clone() as Arc<dyn mem_core::EmbeddingProvider>,
@@ -70,8 +70,8 @@ fn create_providers(
                 .context("GEMINI_API_KEY missing")?
                 .expose_secret()
                 .clone();
-            let model = config.model_name.clone();
-            let provider = Arc::new(mem_core::GeminiProvider::new(key, model));
+            let model_name = config.model_name.clone();
+            let provider = Arc::new(mem_core::GeminiProvider::new(key, model_name));
             (
                 provider.clone() as Arc<dyn mentalist::ModelProvider>,
                 provider.clone() as Arc<dyn mem_core::EmbeddingProvider>,
@@ -102,8 +102,6 @@ fn create_providers(
         token_counter,
     })
 }
-
-// --- Log Layer ---
 
 struct LogVisitor {
     message: String,
@@ -148,14 +146,10 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for UiLogLayer {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 0. Industrial Persistence: Eagerly load resource-intensive engines.
-    #[cfg(feature = "wasm-tools")]
-    Lazy::force(&mentalist::executor::ENGINE);
+// WASM engine initialization handled by Mentalist if needed.
 
-    // 0. Initial Setup
     let config = AppConfig::from_env();
 
-    // Setup Persistent File Logging
     let log_dir = ".agent/logs";
     let _ = std::fs::create_dir_all(log_dir);
     let file_appender = tracing_appender::rolling::daily(log_dir, "gypsy.log");
@@ -172,14 +166,12 @@ async fn main() -> Result<()> {
         .with(UiLogLayer { tx: log_tx })
         .init();
 
-    // 1. Setup Terminal
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // 2. Setup Services & Agents
     let service_manager = Arc::new(ServiceManager::new());
     if let Err(e) = service_manager.ensure_ollama_ready(&config).await {
         tracing::error!(
@@ -192,12 +184,16 @@ async fn main() -> Result<()> {
     let (input_tx, mut input_rx) = mpsc::channel::<String>(100);
 
     let providers = create_providers(&config, event_tx.clone())?;
+    
+    let pref_dir = std::path::PathBuf::from(".agent");
+    let prefs = Arc::new(tokio::sync::Mutex::new(PrefsManager::new(&pref_dir)));
 
     let mut manager = AgentManager::new(
         event_tx.clone(),
         providers.model.clone(),
         providers.embeddings,
         providers.token_counter,
+        prefs,
         config.clone(),
     )
     .await?;
@@ -209,7 +205,6 @@ async fn main() -> Result<()> {
         "Gypsy agent is ready. Session initialized and secured. 🔮".into(),
     ));
 
-    // 3. Agent Task
     let event_tx_clone = event_tx.clone();
     tokio::spawn(async move {
         while let Some(input) = input_rx.recv().await {
@@ -221,7 +216,6 @@ async fn main() -> Result<()> {
         }
     });
 
-    // 3.5 Ollama Health Task
     if config.provider == "ollama" {
         let service_manager_bg = service_manager.clone();
         let event_tx_bg = event_tx.clone();
@@ -267,14 +261,9 @@ async fn main() -> Result<()> {
                 }
             }
         });
-    } else {
-        // Just to satisfy the shutdown call later if we wrap it in Arc
     }
 
-    // 4. Main Event Loop
     let mut last_tick = std::time::Instant::now();
-    let mut last_metrics_save = std::time::Instant::now();
-    let session_start = std::time::Instant::now();
     let tick_rate = Duration::from_millis(50);
 
     'main_loop: loop {
@@ -324,6 +313,8 @@ async fn main() -> Result<()> {
                             state.follow_chat = true;
                             state.status = "Thinking...".into();
                             state.is_thinking = true;
+                            state.last_input_tokens = 0;
+                            state.last_output_tokens = 0;
                             if let Err(e) = input_tx.try_send(input) {
                                 state
                                     .log
@@ -368,7 +359,6 @@ async fn main() -> Result<()> {
             }
         }
 
-        // Process Background Logs & Agent Events
         while let Ok(log_msg) = log_rx.try_recv() {
             state.log.push(log_msg);
         }
@@ -376,12 +366,13 @@ async fn main() -> Result<()> {
             match event {
                 AgentEvent::Quit => break 'main_loop,
                 AgentEvent::Status(s) => {
-                    if s == "Idle" {
-                        state.is_thinking = false;
-                    }
                     state.status = s;
+                    state.is_thinking = true;
+                    state.pending_plan = None;
                 }
                 AgentEvent::TextChunk(c) => {
+                    state.is_thinking = false;
+                    state.pending_plan = None;
                     if let Some(LogEntry::Gypsy(ref mut msg)) = state.log.iter_mut().last() {
                         msg.push_str(&c);
                     } else {
@@ -397,9 +388,18 @@ async fn main() -> Result<()> {
                     step,
                     tool_name,
                 } => {
-                    state.tokens = tokens;
-                    state.total_input_tokens += input_tokens;
-                    state.total_output_tokens += output_tokens;
+                    // input_tokens and output_tokens are cumulative FOR THIS TURN.
+                    // We calculate the delta and add it to the TOTAL session tokens.
+                    let input_delta = input_tokens.saturating_sub(state.last_input_tokens);
+                    let output_delta = output_tokens.saturating_sub(state.last_output_tokens);
+                    
+                    state.total_input_tokens += input_delta;
+                    state.total_output_tokens += output_delta;
+                    
+                    state.last_input_tokens = input_tokens;
+                    state.last_output_tokens = output_tokens;
+                    
+                    state.tokens = tokens; // Still used for turn-level display if needed
                     state.context_size = context_size;
                     state.current_step = step;
 
@@ -426,6 +426,12 @@ async fn main() -> Result<()> {
                 AgentEvent::ToolResult { name, success } => {
                     state.tool_status.insert(name, success);
                 }
+                AgentEvent::AwaitingApproval(plan) => {
+                    state.status = "Awaiting Approval".into();
+                    state.is_thinking = false;
+                    state.pending_plan = Some(plan.clone());
+                    state.log.push(LogEntry::System(format!("Plan requires approval ({} tasks). Type /approve to proceed.", plan.tasks.len())));
+                }
                 AgentEvent::Error(e) => {
                     state.log.push(LogEntry::Error(e));
                     state.status = "Error".into();
@@ -438,7 +444,6 @@ async fn main() -> Result<()> {
             state.counter += 1;
         }
 
-        // Update context history for sparkline (every 5s)
         if last_tick.elapsed() >= Duration::from_secs(5) {
             state.context_history.push(state.context_size as u64);
             if state.context_history.len() > 50 {
@@ -449,51 +454,12 @@ async fn main() -> Result<()> {
         if last_tick.elapsed() >= tick_rate {
             last_tick = std::time::Instant::now();
         }
-
-        // Periodic metrics save (every 5m)
-        if last_metrics_save.elapsed() >= Duration::from_secs(300) {
-            let metrics = gypsy::session::SessionMetrics {
-                total_input_tokens: state.total_input_tokens,
-                total_output_tokens: state.total_output_tokens,
-                tool_calls_total: state.tool_calls_total as u32,
-                avg_latency_ms: state.llm_latency_ms,
-                tool_success_rate: if state.tool_calls_total > 0 {
-                    state.tool_status.values().filter(|v| **v).count() as f32
-                        / state.tool_calls_total as f32
-                } else {
-                    1.0
-                },
-                session_duration_seconds: session_start.elapsed().as_secs(),
-            };
-            let metrics_mgr = gypsy::session::SessionManager::new(&config.sessions_path);
-            let _ = metrics_mgr.save_metrics(&config.session_id, &metrics);
-            last_metrics_save = std::time::Instant::now();
-        }
     }
 
-    // Final Metrics Save
-    let metrics = gypsy::session::SessionMetrics {
-        total_input_tokens: state.total_input_tokens,
-        total_output_tokens: state.total_output_tokens,
-        tool_calls_total: state.tool_calls_total as u32,
-        avg_latency_ms: state.llm_latency_ms,
-        tool_success_rate: if state.tool_calls_total > 0 {
-            state.tool_status.values().filter(|v| **v).count() as f32
-                / state.tool_calls_total as f32
-        } else {
-            1.0
-        },
-        session_duration_seconds: session_start.elapsed().as_secs(),
-    };
-    let metrics_mgr = gypsy::session::SessionManager::new(&config.sessions_path);
-    let _ = metrics_mgr.save_metrics(&config.session_id, &metrics);
-
-    // 5. Cleanup
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
-    // Mission Complete: Release resources
     tracing::info!("Shutting down Gypsy services...");
     service_manager.shutdown().await;
 

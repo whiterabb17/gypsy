@@ -31,6 +31,7 @@ impl Default for ContextConsumerConfig {
 #[derive(Debug, Default)]
 pub struct ConsumeReport {
     pub processed_files: Vec<PathBuf>,
+    pub contents: Vec<(PathBuf, String)>,
     pub skipped_oversized: Vec<PathBuf>,
     pub read_errors: Vec<(PathBuf, String)>,
     pub timeouts: Vec<PathBuf>,
@@ -107,7 +108,8 @@ impl ContextConsumer {
                 Ok(Ok(content)) => {
                     let bytes = content.len() as u64;
                     total_bytes += bytes;
-                    report.processed_files.push(path);
+                    report.processed_files.push(path.clone());
+                    report.contents.push((path, content));
                     report.total_bytes += bytes;
                 }
                 Ok(Err(e)) => {

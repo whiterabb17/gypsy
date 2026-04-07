@@ -58,6 +58,11 @@ pub struct AppState {
     pub context_history: Vec<u64>,
     pub rolling_latency: Vec<u128>,
     pub fallback_pending: bool,
+    
+    // Internal Tracking
+    pub last_input_tokens: usize,
+    pub last_output_tokens: usize,
+    pub pending_plan: Option<mentalist::mem_planner::ExecutionPlan>,
 }
 
 impl AppState {
@@ -92,6 +97,9 @@ impl AppState {
             context_history: Vec::new(),
             rolling_latency: Vec::with_capacity(5),
             fallback_pending: false,
+            last_input_tokens: 0,
+            last_output_tokens: 0,
+            pending_plan: None,
         }
     }
 }
@@ -240,9 +248,9 @@ pub fn ui(f: &mut Frame, state: &mut AppState) {
             .border_style(if state.fallback_pending { Style::default().fg(Color::LightMagenta) } else { Style::default() }));
     f.render_widget(input, left_chunks[1]);
 
-    // Global Context Usage Bar
+    // Global Context Usage Bar (Utilization of the 32k window)
     let context_ratio = if state.max_tokens > 0 {
-        (state.tokens as f64 / state.max_tokens as f64).min(1.0)
+        (state.context_size as f64 / state.max_tokens as f64).min(1.0)
     } else {
         0.0
     };
@@ -257,7 +265,7 @@ pub fn ui(f: &mut Frame, state: &mut AppState) {
 
     let context_label = format!(
         " Context: {}/{} ({:.1}%) ",
-        state.tokens,
+        state.context_size,
         state.max_tokens,
         context_ratio * 100.0
     );
@@ -343,7 +351,7 @@ pub fn ui(f: &mut Frame, state: &mut AppState) {
     // 2. Token Metrics
     let token_text = vec![
         Line::from(vec![
-            Span::styled("Total: ", Style::default().fg(Color::Gray)),
+            Span::styled("Total Service: ", Style::default().fg(Color::Gray)),
             Span::raw(format!("{}", state.total_input_tokens + state.total_output_tokens)),
         ]),
         Line::from(vec![
@@ -357,41 +365,65 @@ pub fn ui(f: &mut Frame, state: &mut AppState) {
         .block(Block::default().borders(Borders::ALL).title(" Token Usage "));
     f.render_widget(token_para, right_chunks[1]);
 
-    // 3. Memory & Tools
-    let mut mem_text = vec![
-        Line::from(vec![
-            Span::styled("Context Size: ", Style::default().fg(Color::Gray)),
-            Span::raw(format!("{}", state.context_size)),
-        ]),
-        Line::from(vec![
-            Span::styled("Tool Count:   ", Style::default().fg(Color::Gray)),
-            Span::styled(format!("{}", state.tool_calls_total), Style::default().fg(Color::Magenta)),
-        ]),
-    ];
+    // 3. Context & Tools OR Plan Review
+    if let Some(ref plan) = state.pending_plan {
+        let mut plan_text = vec![
+            Line::from(vec![
+                Span::styled("PLAN REQUIRES APPROVAL", Style::default().fg(Color::Cyan).add_modifier(ratatui::style::Modifier::BOLD)),
+            ]),
+            Line::from(vec![
+                Span::styled(format!("Content: {:.50}...", plan.content), Style::default().fg(Color::Gray)),
+            ]),
+            Line::from(""),
+        ];
 
-    // Show last 2 tool results
-    let mut recent_tools: Vec<_> = state.tool_status.iter().collect();
-    recent_tools.sort_by(|a, b| b.0.cmp(a.0)); // Sort by name for now, or we'd need a timestamp
-    for (name, success) in recent_tools.iter().take(2) {
-        let color = if **success { Color::Green } else { Color::Red };
-        let icon = if **success { "✓" } else { "✗" };
-        mem_text.push(Line::from(vec![
-            Span::styled(format!(" {} ", icon), Style::default().fg(color)),
-            Span::styled((*name).clone(), Style::default().fg(Color::Gray)),
-        ]));
-    }
+        for task in &plan.tasks {
+            let status_icon = " [ ] ";
+            plan_text.push(Line::from(vec![
+                Span::styled(status_icon, Style::default().fg(Color::Yellow)),
+                Span::raw(&task.name),
+            ]));
+        }
 
-    let mem_para = Paragraph::new(mem_text)
-        .block(Block::default().borders(Borders::ALL).title(" Capacity & Tools "));
-    f.render_widget(mem_para, right_chunks[2]);
-    
-    // Sparkline for context history
-    if !state.context_history.is_empty() {
-        let sparkline_area = Rect::new(right_chunks[2].x + 1, right_chunks[2].y + 1, right_chunks[2].width - 2, 1);
-        let sparkline = Sparkline::default()
-            .data(&state.context_history)
-            .style(Style::default().fg(Color::Blue));
-        f.render_widget(sparkline, sparkline_area);
+        let plan_para = Paragraph::new(plan_text)
+            .block(Block::default().borders(Borders::ALL).title(" Plan Review "));
+        f.render_widget(plan_para, right_chunks[2]);
+    } else {
+        let mut mem_text = vec![
+            Line::from(vec![
+                Span::styled("Context Size: ", Style::default().fg(Color::Gray)),
+                Span::raw(format!("{}", state.context_size)),
+            ]),
+            Line::from(vec![
+                Span::styled("Tool Count:   ", Style::default().fg(Color::Gray)),
+                Span::styled(format!("{}", state.tool_calls_total), Style::default().fg(Color::Magenta)),
+            ]),
+        ];
+
+        // Show last 2 tool results
+        let mut recent_tools: Vec<_> = state.tool_status.iter().collect();
+        recent_tools.sort_by(|a, b| a.0.cmp(b.0)); 
+        for (name, success) in recent_tools.iter().take(2) {
+            let color = if **success { Color::Green } else { Color::Red };
+            let icon = if **success { "✓" } else { "✗" };
+            mem_text.push(Line::from(vec![
+                Span::styled(format!(" {} ", icon), Style::default().fg(color)),
+                Span::styled((*name).clone(), Style::default().fg(Color::Gray)),
+            ]));
+        }
+
+        let mem_para = Paragraph::new(mem_text)
+            .block(Block::default().borders(Borders::ALL).title(" Capacity & Tools "));
+        f.render_widget(mem_para, right_chunks[2]);
+        
+        // Sparkline for context history
+        if !state.context_history.is_empty() {
+            let sparkline_area = Rect::new(right_chunks[2].x + 1, right_chunks[2].y + 1, right_chunks[2].width - 2, 1);
+            let sparkline = Sparkline::default()
+                .data(&state.context_history)
+                .style(Style::default().fg(Color::Blue));
+            f.render_widget(sparkline, sparkline_area);
+        }
     }
 
     if state.show_debug {
