@@ -367,7 +367,7 @@ async fn main() -> Result<()> {
                 AgentEvent::Quit => break 'main_loop,
                 AgentEvent::Status(s) => {
                     state.status = s;
-                    state.is_thinking = true;
+                    state.is_thinking = !["idle", "ready", "goal completed", "error"].iter().any(|&sub| state.status.to_lowercase().contains(sub));
                     state.pending_plan = None;
                 }
                 AgentEvent::TextChunk(c) => {

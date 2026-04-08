@@ -266,8 +266,11 @@ async fn test_fallback_parsing_e2e() {
     let (tx, mut rx) = mpsc::channel(1000);
     let mut config = AppConfig::from_env();
     let storage_dir = std::env::current_dir().unwrap().join("test_e2e_fallback");
+    let _ = std::fs::create_dir_all(&storage_dir);
     config.storage_path = storage_dir.to_string_lossy().to_string();
+    config.sessions_path = storage_dir.to_string_lossy().to_string();
     config.max_steps = 10;
+    config.session_id = "test_fallback_001".to_string();
     config.mcp_root_path = std::env::current_dir()
         .unwrap()
         .join(".agent/mcp")

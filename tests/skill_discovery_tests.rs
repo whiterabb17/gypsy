@@ -153,13 +153,18 @@ description: Test skill command
 
     manager.handle_command("/skills").await.unwrap();
 
-    if let Some(AgentEvent::TextChunk(msg)) = rx.recv().await {
-        assert!(msg.contains("### Discovered Skills (agentskills.io)"));
-        assert!(msg.contains("test-skill-123")); // Enforced from folder name
-        assert!(msg.contains("Test skill command"));
-    } else {
-        panic!("Expected TextChunk for /skills");
+    let mut found = false;
+    while let Some(event) = rx.recv().await {
+        if let AgentEvent::TextChunk(msg) = event {
+            if msg.contains("### Discovered Skills (agentskills.io)") &&
+               msg.contains("test-skill-123") &&
+               msg.contains("Test skill command") {
+                found = true;
+                break;
+            }
+        }
     }
+    assert!(found, "Expected TextChunk for /skills with correct content");
 
     // Cleanup
     //let _ = std::fs::remove_dir_all(&temp_dir);

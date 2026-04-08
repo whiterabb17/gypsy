@@ -3,9 +3,9 @@ use async_trait::async_trait;
 use mem_core::{EmbeddingProvider, FileStorage, TokenCounter};
 use mentalist::{
     executor::MultiExecutor, mcp::BuiltinMcp, middleware::Middleware,
-    middleware::MindPalaceMiddleware, AgentRuntime, DefaultCritic, ExecutionLimits, Executor,
+    middleware::MindPalaceMiddleware, AgentRuntime, ExecutionLimits, Executor,
     MindPalaceLLM, MindPalaceMemory, MindPalacePlanner, ModelProvider, Policy, RuntimeEvent,
-    SecurityEngine,
+    SecurityEngine, cognition::LlmCritic,
 };
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
@@ -39,7 +39,7 @@ impl mentalist::tools::Tool for EchoTool {
     }
 }
 
-use crate::command_parser::CommandParser;
+
 use crate::context_consumer::ContextConsumer;
 use crate::error::GypsyResult;
 use crate::prefs::PrefsManager;
@@ -117,7 +117,7 @@ impl AgentManager {
 
         // 1. Initialize Memory (MindPalace)
         let mp_config = config.to_mindpalace_config();
-        let mp_middleware = mentalist::middleware::MindPalaceMiddleware::hardened(
+        let mp_middleware = Arc::new(mentalist::middleware::MindPalaceMiddleware::hardened(
             storage.clone(),
             provider.clone(),
             embeddings.clone(),
@@ -126,7 +126,7 @@ impl AgentManager {
             config.embedding_dimension,
             vault_path.clone(),
             Some(mp_config),
-        );
+        ));
         let brain = mp_middleware.brain.clone();
 
         // Correct MindPalaceMemory initialization with retriever
@@ -299,7 +299,7 @@ impl AgentManager {
                 max_steps: config.max_steps,
                 timeout_seconds: config.mcp_initialize_timeout_seconds * 10,
             },
-            middlewares: vec![Arc::new(mp_middleware.clone())],
+            middlewares: vec![mp_middleware.clone() as Arc<dyn Middleware>],
         });
 
         let mut discovered_skills = Vec::new();
@@ -309,12 +309,13 @@ impl AgentManager {
                     let skill_md = entry.path().join("SKILL.md");
                     if skill_md.exists() {
                         if let Ok(content) = std::fs::read_to_string(&skill_md) {
-                            if let Some((name, description)) = Self::parse_skill_metadata(&content) {
-                                let folder_name = entry.path().file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
+                            if let Some((_name, description)) = Self::parse_skill_metadata(&content) {
+                                let path = entry.path();
+                                let folder_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
                                 let meta = SkillInfo {
                                     name: folder_name.to_string(),
                                     description: description.clone(),
-                                    path: entry.path(),
+                                    path: path.clone(),
                                     content: content.clone(),
                                 };
                                 
@@ -323,7 +324,7 @@ impl AgentManager {
                                 let skill_desc = meta.description.clone();
                                 let instructions_clone = meta.content.clone();
                                 
-                                let skill_tool = mentalist::tools::Skill {
+                                let skill_tool = mentalist::tools::skills::Skill {
                                     name: skill_name,
                                     description: format!("Skill: {}. Use this to retrieve specialized instructions or workflows for this domain.", skill_desc),
                                     parameters: serde_json::json!({
@@ -352,7 +353,7 @@ impl AgentManager {
         Ok(Self {
             runtime,
             multi_executor,
-            mp_middleware: Arc::new(mp_middleware),
+            mp_middleware,
             discovered_skills,
             event_tx,
             context_consumer: ContextConsumer::new(),
@@ -563,6 +564,7 @@ impl AgentManager {
                 let _ = self.event_tx.send(AgentEvent::TextChunk(list)).await;
             }
             "/session" => {
+                let args_str = input.strip_prefix("/session").unwrap_or("").trim();
                 let parts: Vec<&str> = args_str.split_whitespace().collect();
                 if parts.is_empty() {
                     let _ = self.event_tx.send(AgentEvent::Error(
@@ -622,6 +624,7 @@ impl AgentManager {
         let _ = self.event_tx.send(AgentEvent::Quit).await;
     }
             "/mcp" => {
+                let args_str = input.strip_prefix("/mcp").unwrap_or("").trim();
                 let parts: Vec<&str> = args_str.split_whitespace().collect();
                 if parts.is_empty() || parts[0] == "list" {
                     let executors = self.multi_executor.registry.list_tools().await;
@@ -708,8 +711,8 @@ impl AgentManager {
                     json
                 ))).await;
             }
-            _ if command.starts_with('/') => {
-                let tool_name = &command[1..];
+            _ if parts[0].starts_with('/') => {
+                let tool_name = &parts[0][1..];
                 let tools = self.runtime.tools.list_tools().await;
                 if let Some(_tool_def) = tools.iter().find(|t| t.name == tool_name) {
                     let _ = self
@@ -719,14 +722,14 @@ impl AgentManager {
                 } else {
                     let _ = self.event_tx.try_send(AgentEvent::Error(format!(
                         "Unknown command or tool: {}",
-                        command
+                        parts[0]
                     )));
                 }
             }
             _ => {
                 let _ = self
                     .event_tx
-                    .try_send(AgentEvent::Error(format!("Unknown command: {}", command)));
+                    .try_send(AgentEvent::Error(format!("Unknown command: {}", parts[0])));
             }
         }
         let _ = self

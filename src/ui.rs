@@ -20,6 +20,7 @@ pub enum LogEntry {
     Trace(String),
     User(String),
     Gypsy(String),
+    System(String),
 }
 
 pub struct AppState {
@@ -144,7 +145,7 @@ pub fn ui(f: &mut Frame, state: &mut AppState) {
     let chat_log = state.log.iter()
         .filter(|e| {
             match e {
-                LogEntry::User(_) | LogEntry::Gypsy(_) | LogEntry::Error(_) => true,
+                LogEntry::User(_) | LogEntry::Gypsy(_) | LogEntry::Error(_) | LogEntry::System(_) => true,
                 _ => false
             }
         });
@@ -181,7 +182,11 @@ pub fn ui(f: &mut Frame, state: &mut AppState) {
                 Span::styled("ERROR: ", Style::default().fg(Color::Red)),
                 Span::raw(msg),
             ]),
-            _ => unreachable!("Chat log should only contain User/Gypsy/Error"),
+            LogEntry::System(msg) => Line::from(vec![
+                Span::styled("SYSTEM: ", Style::default().fg(Color::DarkGray)),
+                Span::raw(msg),
+            ]),
+            _ => unreachable!("Chat log should only contain User/Gypsy/Error/System"),
         };
         chat_text.lines.push(line);
     }
@@ -381,7 +386,7 @@ pub fn ui(f: &mut Frame, state: &mut AppState) {
             let status_icon = " [ ] ";
             plan_text.push(Line::from(vec![
                 Span::styled(status_icon, Style::default().fg(Color::Yellow)),
-                Span::raw(&task.name),
+                Span::raw(&task.1.name),
             ]));
         }
 
