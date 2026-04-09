@@ -168,7 +168,7 @@ async fn main() -> Result<()> {
 
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, event::EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -274,88 +274,126 @@ async fn main() -> Result<()> {
             .unwrap_or(Duration::from_secs(0));
 
         if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind != event::KeyEventKind::Press {
-                    continue;
-                }
-                match key.code {
-                    KeyCode::Esc => break 'main_loop,
-                    KeyCode::F(1) => state.show_debug = !state.show_debug,
-                    KeyCode::PageUp => {
-                        if key.modifiers.contains(event::KeyModifiers::SHIFT) {
-                            state.system_log_scroll = state.system_log_scroll.saturating_sub(5);
-                            state.follow_system = false;
-                        } else {
-                            state.log_scroll = state.log_scroll.saturating_sub(5);
-                            state.follow_chat = false;
-                        }
+            match event::read()? {
+                Event::Key(key) => {
+                    if key.kind != event::KeyEventKind::Press {
+                        continue;
                     }
-                    KeyCode::PageDown => {
-                        if key.modifiers.contains(event::KeyModifiers::SHIFT) {
-                            state.system_log_scroll = state.system_log_scroll.saturating_add(5);
-                            state.follow_system = true;
-                        } else {
-                            state.log_scroll = state.log_scroll.saturating_add(5);
-                            state.follow_chat = true;
+                    match key.code {
+                        KeyCode::Esc => break 'main_loop,
+                        KeyCode::F(1) => state.show_debug = !state.show_debug,
+                        KeyCode::PageUp => {
+                            if key.modifiers.contains(event::KeyModifiers::SHIFT) {
+                                state.system_log_scroll = state.system_log_scroll.saturating_sub(5);
+                                state.follow_system = false;
+                            } else {
+                                state.log_scroll = state.log_scroll.saturating_sub(5);
+                                state.follow_chat = false;
+                            }
                         }
-                    }
-                    KeyCode::Tab => {
-                        if !state.autocomplete_suggestions.is_empty() {
-                            state.input_buffer = state.autocomplete_suggestions[0].clone();
+                        KeyCode::PageDown => {
+                            if key.modifiers.contains(event::KeyModifiers::SHIFT) {
+                                state.system_log_scroll = state.system_log_scroll.saturating_add(5);
+                                state.follow_system = true;
+                            } else {
+                                state.log_scroll = state.log_scroll.saturating_add(5);
+                                state.follow_chat = true;
+                            }
+                        }
+                        KeyCode::Tab => {
+                            if !state.autocomplete_suggestions.is_empty() {
+                                state.input_buffer = state.autocomplete_suggestions[0].clone();
+                                state.autocomplete_suggestions.clear();
+                            }
+                        }
+                        KeyCode::Enter => {
+                            let input: String = state.input_buffer.drain(..).collect();
                             state.autocomplete_suggestions.clear();
+                            if !input.trim().is_empty() {
+                                state.log.push(LogEntry::User(input.clone()));
+                                state.log.push(LogEntry::Reasoning {
+                                    main_step: "Initializing...".to_string(),
+                                    sub_steps: Vec::new(),
+                                    collapsed: false,
+                                });
+                                state.follow_chat = true;
+                                state.status = "Thinking...".into();
+                                state.is_thinking = true;
+                                state.last_input_tokens = 0;
+                                state.last_output_tokens = 0;
+                                if let Err(e) = input_tx.try_send(input) {
+                                    state
+                                        .log
+                                        .push(LogEntry::Error("Queue full, command dropped.".into()));
+                                    tracing::warn!("Agent queue full: {:?}", e);
+                                }
+                            }
                         }
+                        KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                            break 'main_loop
+                        }
+                        KeyCode::Char('y') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                            // Find the last agent response
+                            if let Some(LogEntry::Gypsy(msg)) = state.log.iter().rev().find(|m| matches!(m, LogEntry::Gypsy(_))) {
+                                match arboard::Clipboard::new() {
+                                    Ok(mut clipboard) => {
+                                        if let Err(e) = clipboard.set_text(msg.clone()) {
+                                            state.log.push(LogEntry::Error(format!("Clipboard error: {}", e)));
+                                        } else {
+                                            state.log.push(LogEntry::Info("Gypsy response copied to clipboard.".into()));
+                                        }
+                                    }
+                                    Err(e) => {
+                                        state.log.push(LogEntry::Error(format!("Failed to init clipboard: {}", e)));
+                                    }
+                                }
+                            }
+                        }
+                        KeyCode::Char(c) => {
+                            if state.input_buffer.len() < 4096 {
+                                state.input_buffer.push(c);
+                            }
+                            if state.input_buffer.starts_with('/') {
+                                state.autocomplete_suggestions = state
+                                    .available_commands
+                                    .iter()
+                                    .filter(|cmd| cmd.starts_with(&state.input_buffer))
+                                    .cloned()
+                                    .collect();
+                            } else {
+                                state.autocomplete_suggestions.clear();
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            state.input_buffer.pop();
+                            if state.input_buffer.starts_with('/') && !state.input_buffer.is_empty() {
+                                state.autocomplete_suggestions = state
+                                    .available_commands
+                                    .iter()
+                                    .filter(|cmd| cmd.starts_with(&state.input_buffer))
+                                    .cloned()
+                                    .collect();
+                            } else {
+                                state.autocomplete_suggestions.clear();
+                            }
+                        }
+                        _ => {}
                     }
-                    KeyCode::Enter => {
-                        let input: String = state.input_buffer.drain(..).collect();
-                        state.autocomplete_suggestions.clear();
-                        if !input.trim().is_empty() {
-                            state.log.push(LogEntry::User(input.clone()));
-                            state.follow_chat = true;
-                            state.status = "Thinking...".into();
-                            state.is_thinking = true;
-                            state.last_input_tokens = 0;
-                            state.last_output_tokens = 0;
-                            if let Err(e) = input_tx.try_send(input) {
-                                state
-                                    .log
-                                    .push(LogEntry::Error("Queue full, command dropped.".into()));
-                                tracing::warn!("Agent queue full: {:?}", e);
+                }
+                Event::Mouse(mouse) => {
+                    if mouse.kind == event::MouseEventKind::Down(event::MouseButton::Left) {
+                        for (idx, rect) in &state.reasoning_rects {
+                            if mouse.column >= rect.x && mouse.column < rect.x + rect.width
+                                && mouse.row >= rect.y && mouse.row < rect.y + rect.height
+                            {
+                                if let Some(LogEntry::Reasoning { collapsed, .. }) = state.log.get_mut(*idx) {
+                                    *collapsed = !*collapsed;
+                                }
                             }
                         }
                     }
-                    KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                        break 'main_loop
-                    }
-                    KeyCode::Char(c) => {
-                        if state.input_buffer.len() < 4096 {
-                            state.input_buffer.push(c);
-                        }
-                        if state.input_buffer.starts_with('/') {
-                            state.autocomplete_suggestions = state
-                                .available_commands
-                                .iter()
-                                .filter(|cmd| cmd.starts_with(&state.input_buffer))
-                                .cloned()
-                                .collect();
-                        } else {
-                            state.autocomplete_suggestions.clear();
-                        }
-                    }
-                    KeyCode::Backspace => {
-                        state.input_buffer.pop();
-                        if state.input_buffer.starts_with('/') && !state.input_buffer.is_empty() {
-                            state.autocomplete_suggestions = state
-                                .available_commands
-                                .iter()
-                                .filter(|cmd| cmd.starts_with(&state.input_buffer))
-                                .cloned()
-                                .collect();
-                        } else {
-                            state.autocomplete_suggestions.clear();
-                        }
-                    }
-                    _ => {}
                 }
+                _ => {}
             }
         }
 
@@ -366,9 +404,23 @@ async fn main() -> Result<()> {
             match event {
                 AgentEvent::Quit => break 'main_loop,
                 AgentEvent::Status(s) => {
-                    state.status = s;
+                    let old_thinking = state.is_thinking;
+                    state.status = s.clone();
                     state.is_thinking = !["idle", "ready", "goal completed", "error"].iter().any(|&sub| state.status.to_lowercase().contains(sub));
                     state.pending_plan = None;
+
+                    if state.is_thinking {
+                        // Update reasoning log
+                        if let Some(LogEntry::Reasoning { main_step, sub_steps, .. }) = state.log.iter_mut().rev().find(|m| matches!(m, LogEntry::Reasoning {..})) {
+                            *main_step = s;
+                            sub_steps.push(main_step.clone());
+                        }
+                    } else if old_thinking {
+                        // Collapse on completion
+                        if let Some(LogEntry::Reasoning { collapsed, .. }) = state.log.iter_mut().rev().find(|m| matches!(m, LogEntry::Reasoning {..})) {
+                            *collapsed = true;
+                        }
+                    }
                 }
                 AgentEvent::TextChunk(c) => {
                     state.is_thinking = false;
@@ -436,6 +488,10 @@ async fn main() -> Result<()> {
                     state.log.push(LogEntry::Error(e));
                     state.status = "Error".into();
                     state.is_thinking = false;
+                    // Collapse on error
+                    if let Some(LogEntry::Reasoning { collapsed, .. }) = state.log.iter_mut().rev().find(|m| matches!(m, LogEntry::Reasoning {..})) {
+                        *collapsed = true;
+                    }
                 }
             }
         }
@@ -457,7 +513,7 @@ async fn main() -> Result<()> {
     }
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, event::DisableMouseCapture)?;
     terminal.show_cursor()?;
 
     tracing::info!("Shutting down Gypsy services...");

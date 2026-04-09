@@ -10,7 +10,6 @@ use mem_core::{
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tokio::sync::Mutex;
 
 // --- E2E Mocks ---
 
@@ -91,7 +90,7 @@ impl ModelProvider for HappyModel {
                 .last()
                 .unwrap()
                 .as_ref()
-                .map_or(false, |c| c.is_final)
+                .is_ok_and(|c| c.is_final)
         {
             chunks.push(Ok(ResponseChunk {
                 content_delta: None,

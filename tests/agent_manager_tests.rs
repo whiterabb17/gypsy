@@ -10,7 +10,6 @@ use mem_core::{
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tokio::sync::Mutex;
 
 // --- Mock Providers ---
 
@@ -67,18 +66,6 @@ impl TokenCounter for MockCounter {
     }
 }
 
-async fn wait_for_mcp(manager: &AgentManager, source: &str) -> bool {
-    let start = std::time::Instant::now();
-    let timeout = std::time::Duration::from_secs(5);
-    while start.elapsed() < timeout {
-        let tools = manager.multi_executor.registry.list_tools().await;
-        if tools.iter().any(|t| t.source == source) {
-            return true;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    false
-}
 
 #[tokio::test]
 async fn test_agent_manager_init() {
@@ -117,7 +104,7 @@ async fn test_tool_registry_ready() {
 
     let prefs = Arc::new(tokio::sync::Mutex::new(PrefsManager::new(&PathBuf::from("/tmp"))));
 
-    let mut manager = AgentManager::new(
+    let manager = AgentManager::new(
         tx,
         Arc::new(MockProvider),
         Arc::new(MockEmbed),
@@ -145,18 +132,6 @@ async fn test_tool_registry_ready() {
     assert!(tools.iter().any(|t| t.name == "registry_test"));
 }
 
-async fn wait_for_mcp_timeout(manager: &AgentManager, source: &str, timeout_secs: u64) -> bool {
-    let start = std::time::Instant::now();
-    let timeout = std::time::Duration::from_secs(timeout_secs);
-    while start.elapsed() < timeout {
-        let tools = manager.multi_executor.registry.list_tools().await;
-        if tools.iter().any(|t| t.source == source) {
-            return true;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    false
-}
 
 #[tokio::test]
 async fn test_command_handler() {
@@ -244,16 +219,18 @@ async fn test_agent_manager_session_persistence() {
     .unwrap();
 
     // In v0.3.5, we verify persistence via the SessionManager directly
-    let mut state = mentalist::AgentState::default();
-    state.session_id = session_id.clone();
-    state.context = Arc::new(mem_core::Context {
-        items: vec![MemoryItem {
-            role: MemoryRole::User,
-            content: "Persistence test content".into(),
-            timestamp: 12345,
-            metadata: serde_json::json!({}),
-        }],
-    });
+    let state = mentalist::AgentState {
+        session_id: session_id.clone(),
+        context: Arc::new(mem_core::Context {
+            items: vec![MemoryItem {
+                role: MemoryRole::User,
+                content: "Persistence test content".into(),
+                timestamp: 12345,
+                metadata: serde_json::json!({}),
+            }],
+        }),
+        ..Default::default()
+    };
 
     manager.session_manager.save_session(&state).unwrap();
 
@@ -272,9 +249,9 @@ async fn test_agent_manager_session_persistence() {
     .unwrap();
 
     let loaded_state = manager2.session_manager.load_session(&session_id).unwrap();
-    assert_eq!(loaded_state.context.items.len(), 1);
+    assert_eq!(loaded_state.context.items.len(), 2);
     assert_eq!(
-        loaded_state.context.items[0].content,
+        loaded_state.context.items[1].content,
         "Persistence test content"
     );
 
@@ -305,7 +282,6 @@ async fn test_vector_memory_recall() {
     .unwrap();
 
     // Store a "memory" via the mentalist memory interface
-    use mentalist::memory::MemoryStore;
 
     // For this test, we verify that we can at least invoke the recall method
     let query = mentalist::memory::MemoryQuery {

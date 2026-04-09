@@ -21,6 +21,11 @@ pub enum LogEntry {
     User(String),
     Gypsy(String),
     System(String),
+    Reasoning {
+        main_step: String,
+        sub_steps: Vec<String>,
+        collapsed: bool,
+    },
 }
 
 pub struct AppState {
@@ -64,6 +69,13 @@ pub struct AppState {
     pub last_input_tokens: usize,
     pub last_output_tokens: usize,
     pub pending_plan: Option<mentalist::mem_planner::ExecutionPlan>,
+    pub reasoning_rects: HashMap<usize, Rect>, // Map log index to clickable Rect
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AppState {
@@ -101,6 +113,7 @@ impl AppState {
             last_input_tokens: 0,
             last_output_tokens: 0,
             pending_plan: None,
+            reasoning_rects: HashMap::new(),
         }
     }
 }
@@ -114,7 +127,7 @@ fn estimate_height(text: &Text, width: u16) -> u16 {
             height += 1;
         } else {
             // Basic wrap estimation: total width / available width
-            height += (line_width + width - 1) / width;
+            height += line_width.div_ceil(width);
         }
     }
     height
@@ -135,19 +148,21 @@ pub fn ui(f: &mut Frame, state: &mut AppState) {
         ])
         .split(chunks[0]);
 
+    // Calculate input height based on content
+    let input_text = Text::raw(state.input_buffer.as_str());
+    let input_width = main_chunks[0].width.saturating_sub(2);
+    let input_height = estimate_height(&input_text, input_width).clamp(1, 15) + 2;
+
     // 1. Interaction (Chat) Logs
     let left_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(3)])
+        .constraints([Constraint::Min(3), Constraint::Length(input_height)])
         .split(main_chunks[0]);
 
     // 1. Interaction (Chat) Logs
-    let chat_log = state.log.iter()
-        .filter(|e| {
-            match e {
-                LogEntry::User(_) | LogEntry::Gypsy(_) | LogEntry::Error(_) | LogEntry::System(_) => true,
-                _ => false
-            }
+    let chat_log = state.log.iter().enumerate()
+        .filter(|(_, e)| {
+            matches!(e, LogEntry::User(_) | LogEntry::Gypsy(_) | LogEntry::Error(_) | LogEntry::System(_) | LogEntry::Reasoning {..})
         });
 
     // 2. Systems (Under-the-Hood) Logs
@@ -167,32 +182,93 @@ pub fn ui(f: &mut Frame, state: &mut AppState) {
     let chat_log = chat_log.take(MAX_VISIBLE_LOGS);
     let system_log = system_log.take(MAX_VISIBLE_LOGS);
 
-    let mut chat_text = Text::default();
-    for entry in chat_log {
-        let line = match entry {
-            LogEntry::User(msg) => Line::from(vec![
-                Span::styled("User: ", Style::default().fg(Color::Cyan)),
-                Span::raw(msg),
-            ]),
-            LogEntry::Gypsy(msg) => Line::from(vec![
-                Span::styled("Gypsy: ", Style::default().fg(Color::Green)),
-                Span::raw(msg),
-            ]),
-            LogEntry::Error(msg) => Line::from(vec![
-                Span::styled("ERROR: ", Style::default().fg(Color::Red)),
-                Span::raw(msg),
-            ]),
-            LogEntry::System(msg) => Line::from(vec![
-                Span::styled("SYSTEM: ", Style::default().fg(Color::DarkGray)),
-                Span::raw(msg),
-            ]),
-            _ => unreachable!("Chat log should only contain User/Gypsy/Error/System"),
-        };
-        chat_text.lines.push(line);
-    }
-
+    state.reasoning_rects.clear();
     let chat_inner_width = left_chunks[0].width.saturating_sub(2);
     let chat_inner_height = left_chunks[0].height.saturating_sub(2);
+    let mut current_line_offset: u16 = 0;
+    let mut chat_text = Text::default();
+
+    for (idx, entry) in chat_log {
+        let mut entry_lines = Vec::new();
+        match entry {
+            LogEntry::User(msg) => {
+                entry_lines.push(Line::from(vec![
+                    Span::styled("User: ", Style::default().fg(Color::Cyan)),
+                    Span::raw(msg),
+                ]));
+            }
+            LogEntry::Gypsy(msg) => {
+                entry_lines.push(Line::from(vec![
+                    Span::styled("Gypsy: ", Style::default().fg(Color::Green)),
+                    Span::raw(msg),
+                ]));
+            }
+            LogEntry::Error(msg) => {
+                entry_lines.push(Line::from(vec![
+                    Span::styled("ERROR: ", Style::default().fg(Color::Red)),
+                    Span::raw(msg),
+                ]));
+            }
+            LogEntry::System(msg) => {
+                entry_lines.push(Line::from(vec![
+                    Span::styled("SYSTEM: ", Style::default().fg(Color::DarkGray)),
+                    Span::raw(msg),
+                ]));
+            }
+            LogEntry::Reasoning { main_step, sub_steps, collapsed } => {
+                let arrow = if *collapsed { "▶ " } else { "▼ " };
+                let header = Line::from(vec![
+                    Span::styled(arrow, Style::default().fg(Color::Yellow)),
+                    Span::styled(main_step, Style::default().fg(Color::Yellow).add_modifier(ratatui::style::Modifier::ITALIC)),
+                ]);
+                
+                // Track Rect for this reasoning entry
+                // Only if it's within the visible log scroll? No, track all, we'll hit test with scroll.
+                let _entry_height = if *collapsed {
+                    estimate_height(&Text::from(header.clone()), chat_inner_width)
+                } else {
+                    let mut text = Text::from(header.clone());
+                    for step in sub_steps {
+                        text.lines.push(Line::from(vec![
+                            Span::raw("  "),
+                            Span::styled(step, Style::default().fg(Color::DarkGray).add_modifier(ratatui::style::Modifier::ITALIC)),
+                        ]));
+                    }
+                    estimate_height(&text, chat_inner_width)
+                };
+
+                let rect = Rect::new(
+                    left_chunks[0].x + 1,
+                    left_chunks[0].y + 1 + current_line_offset.saturating_sub(state.log_scroll),
+                    left_chunks[0].width.saturating_sub(2),
+                    1 // Just the header is clickable
+                );
+                
+                // We only store it if it's actually visible on screen
+                if current_line_offset >= state.log_scroll && (current_line_offset - state.log_scroll) < chat_inner_height {
+                    state.reasoning_rects.insert(idx, rect);
+                }
+
+                entry_lines.push(header);
+                if !*collapsed {
+                    for step in sub_steps {
+                        entry_lines.push(Line::from(vec![
+                            Span::raw("  "),
+                            Span::styled(step, Style::default().fg(Color::DarkGray).add_modifier(ratatui::style::Modifier::ITALIC)),
+                        ]));
+                    }
+                }
+            }
+            _ => continue,
+        };
+
+        let entry_text = Text::from(entry_lines.clone());
+        let entry_height = estimate_height(&entry_text, chat_inner_width);
+        
+        chat_text.lines.extend(entry_lines);
+        current_line_offset += entry_height;
+    }
+
     let chat_content_height = estimate_height(&chat_text, chat_inner_width);
 
     if state.follow_chat {
@@ -250,7 +326,8 @@ pub fn ui(f: &mut Frame, state: &mut AppState) {
         .block(Block::default()
             .borders(Borders::ALL)
             .title(input_title)
-            .border_style(if state.fallback_pending { Style::default().fg(Color::LightMagenta) } else { Style::default() }));
+            .border_style(if state.fallback_pending { Style::default().fg(Color::LightMagenta) } else { Style::default() }))
+        .wrap(Wrap { trim: true });
     f.render_widget(input, left_chunks[1]);
 
     // Global Context Usage Bar (Utilization of the 32k window)
@@ -522,6 +599,10 @@ pub fn ui(f: &mut Frame, state: &mut AppState) {
             Span::styled("F1: ", Style::default().fg(Color::DarkGray)),
             Span::raw("Debug"),
         ]),
+        Line::from(vec![
+            Span::styled("Ctrl-Y: ", Style::default().fg(Color::DarkGray)),
+            Span::raw("Copy"),
+        ]),
     ]))
     .block(Block::default().borders(Borders::ALL).title("Quick Help"));
 
@@ -530,6 +611,10 @@ pub fn ui(f: &mut Frame, state: &mut AppState) {
         Line::from(vec![
             Span::styled("PgDn: ", Style::default().fg(Color::DarkGray)),
             Span::raw("Down"),
+        ]),
+        Line::from(vec![
+            Span::styled("Shift+Sel: ", Style::default().fg(Color::Yellow)),
+            Span::raw("Native Copy"),
         ]),
     ]))
     .block(Block::default().borders(Borders::ALL).title(""));

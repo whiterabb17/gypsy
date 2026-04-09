@@ -43,6 +43,12 @@ pub struct ContextConsumer {
     pub config: ContextConsumerConfig,
 }
 
+impl Default for ContextConsumer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ContextConsumer {
     pub fn new() -> Self {
         Self {

@@ -112,8 +112,11 @@ impl AgentManager {
         let session_id = config.session_id.clone();
         let session_manager = Arc::new(SessionManager::new(&config.sessions_path));
 
-        let vault_path = Self::get_vault_path(&config, &session_id);
+        let mut vault_path = Self::get_vault_path(&config, &session_id);
         std::fs::create_dir_all(&vault_path).ok();
+        if let Ok(canon) = std::fs::canonicalize(&vault_path) {
+            vault_path = canon;
+        }
 
         // 1. Initialize Memory (MindPalace)
         let mp_config = config.to_mindpalace_config();
@@ -153,13 +156,20 @@ impl AgentManager {
         // Register Builtin Tools
         let _ = multi_executor.add_tool(Arc::new(EchoTool)).await;
 
+        let current_dir = std::env::current_dir()?;
+        let canonical_current = std::fs::canonicalize(&current_dir)
+            .unwrap_or(current_dir.clone());
+            
         let fs_paths = if config.mcp_filesystem_paths.is_empty() {
-            vec![std::env::current_dir()?.to_string_lossy().to_string()]
+            vec![canonical_current.to_string_lossy().to_string()]
         } else {
             config
                 .mcp_filesystem_paths
                 .iter()
-                .map(|p| PathBuf::from(p))
+                .map(|p| {
+                    let path = PathBuf::from(p);
+                    std::fs::canonicalize(&path).unwrap_or(path)
+                })
                 .filter(|p| p.exists())
                 .map(|p| p.to_string_lossy().to_string())
                 .collect::<Vec<_>>()
@@ -173,6 +183,7 @@ impl AgentManager {
             let multi_executor = Arc::clone(&multi_executor);
             let mcp_root = mcp_root.clone();
             let event_tx = event_tx.clone();
+            let fs_paths = fs_paths.clone();
             spawn_handles.push(tokio::spawn(async move {
                 if std::env::var("GYPSY_SKIP_MCP_INSTALL").is_err() {
                     let _ = event_tx.send(AgentEvent::Status("Installing filesystem MCP...".into())).await;
@@ -302,6 +313,34 @@ impl AgentManager {
             middlewares: vec![mp_middleware.clone() as Arc<dyn Middleware>],
         });
 
+        // Add sandbox awareness to early context
+        let mut initial_context = mem_core::Context::default();
+        let allowed_root = fs_paths.first().cloned().unwrap_or_else(|| canonical_current.to_string_lossy().to_string());
+        initial_context.items.push(mem_core::MemoryItem {
+            role: mem_core::MemoryRole::System,
+            content: format!(
+                "CRITICAL SECURITY: Your filesystem access is restricted to the following root: '{}'. Always use paths within this directory. Your current working directory is also set to this root.",
+                allowed_root
+            ),
+            timestamp: chrono::Utc::now().timestamp() as u64,
+            metadata: serde_json::json!({"type": "sandbox_init"}),
+        });
+        
+        // Load session and merge with initial context (avoid duplicates)
+        let session_id = config.session_id.clone();
+        if let Ok(mut state) = session_manager.load_session(&session_id) {
+            let has_sandbox_init = state.context.items.iter().any(|i| {
+                i.metadata.get("type").and_then(|t| t.as_str()) == Some("sandbox_init")
+            });
+            
+            if !has_sandbox_init {
+                let mut merged_items = initial_context.items;
+                merged_items.extend((*state.context).clone().items);
+                state.context = Arc::new(mem_core::Context { items: merged_items });
+                let _ = session_manager.save_session(&state);
+            }
+        }
+
         let mut discovered_skills = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&skills_path) {
             for entry in entries.flatten() {
@@ -341,7 +380,7 @@ impl AgentManager {
                                     }),
                                 };
                                 
-                                let _ = multi_executor.add_tool(std::sync::Arc::new(skill_tool));
+                                let _ = multi_executor.add_tool(std::sync::Arc::new(skill_tool)).await;
                                 discovered_skills.push(meta);
                             }
                         }

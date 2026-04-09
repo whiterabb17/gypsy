@@ -162,29 +162,31 @@ impl AppConfig {
     }
 
     pub fn to_mindpalace_config(&self) -> MindPalaceConfig {
-        let mut config = MindPalaceConfig::default();
-        config.default_model = self.model_name.clone();
-        config.similarity_threshold = self.similarity_threshold;
-        config.compression_ratio = self.compression_ratio;
-        config.max_context_items = self.max_context_items;
-        config.base_ttl_seconds = self.base_ttl_seconds;
-        config.summary_interval = self.summary_interval;
-        config.max_tokens_per_dream = self.max_tokens_per_dream;
-        config
+        MindPalaceConfig {
+            default_model: self.model_name.clone(),
+            similarity_threshold: self.similarity_threshold,
+            compression_ratio: self.compression_ratio,
+            max_context_items: self.max_context_items,
+            base_ttl_seconds: self.base_ttl_seconds,
+            summary_interval: self.summary_interval,
+            max_tokens_per_dream: self.max_tokens_per_dream,
+            ..Default::default()
+        }
     }
 
     pub fn to_security_config(&self) -> mentalist::config::SecurityConfig {
-        let mut config = mentalist::config::SecurityConfig::default();
-        config.max_memory_mb = self.ram_limit_mb;
-        config.enforce_sandboxing = self.sandbox_mode != "local";
-        // Map other relevant fields if needed
-        config
+        mentalist::config::SecurityConfig {
+            max_memory_mb: self.ram_limit_mb,
+            enforce_sandboxing: self.sandbox_mode != "local",
+            ..Default::default()
+        }
     }
 
     pub fn to_agent_config(&self) -> mentalist::config::AgentConfig {
-        let mut config = mentalist::config::AgentConfig::default();
-        config.max_context_items = self.max_context_items;
-        config.timeout_seconds = 300; // Default or add to AppConfig
-        config
+        mentalist::config::AgentConfig {
+            max_context_items: self.max_context_items,
+            timeout_seconds: 300, // Default or add to AppConfig
+            ..Default::default()
+        }
     }
 }

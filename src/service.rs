@@ -11,6 +11,12 @@ pub struct ServiceManager {
     ollama_child: Arc<Mutex<Option<tokio::process::Child>>>,
 }
 
+impl Default for ServiceManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ServiceManager {
     pub fn new() -> Self {
         Self {
