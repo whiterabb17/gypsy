@@ -22,12 +22,18 @@ struct ProviderStack {
     pub model: Arc<dyn mentalist::ModelProvider>,
     pub embeddings: Arc<dyn mem_core::EmbeddingProvider>,
     pub token_counter: Arc<dyn mem_core::TokenCounter>,
+    pub context_window: usize,
+    pub embedding_dimension: usize,
 }
 
-fn create_providers(
+
+async fn create_providers(
     config: &AppConfig,
     _event_tx: mpsc::Sender<AgentEvent>,
 ) -> Result<ProviderStack> {
+    let mut embedding_dimension = config.embedding_dimension;
+    let mut context_window = config.model_context_window;
+
     let (primary_model, embeddings, token_counter): (
         Arc<dyn mentalist::ModelProvider>,
         Arc<dyn mem_core::EmbeddingProvider>,
@@ -42,6 +48,11 @@ fn create_providers(
                 .clone();
             let model_name = config.model_name.clone();
             let provider = Arc::new(mem_core::AnthropicProvider::new(key, model_name));
+            
+            // Minimal config for cloud: auto-resolve
+            embedding_dimension = 1536; 
+            context_window = 200000;
+
             (
                 provider.clone() as Arc<dyn mentalist::ModelProvider>,
                 provider.clone() as Arc<dyn mem_core::EmbeddingProvider>,
@@ -57,6 +68,11 @@ fn create_providers(
                 .clone();
             let model_name = config.model_name.clone();
             let provider = Arc::new(mem_core::OpenAiProvider::new(key, model_name));
+            
+            // Minimal config for cloud: auto-resolve
+            embedding_dimension = 1536;
+            context_window = 128000;
+
             (
                 provider.clone() as Arc<dyn mentalist::ModelProvider>,
                 provider.clone() as Arc<dyn mem_core::EmbeddingProvider>,
@@ -72,6 +88,11 @@ fn create_providers(
                 .clone();
             let model_name = config.model_name.clone();
             let provider = Arc::new(mem_core::GeminiProvider::new(key, model_name));
+            
+            // Minimal config for cloud: auto-resolve
+            embedding_dimension = 768; // Gemini 1.5 defaults
+            context_window = 1000000;
+
             (
                 provider.clone() as Arc<dyn mentalist::ModelProvider>,
                 provider.clone() as Arc<dyn mem_core::EmbeddingProvider>,
@@ -88,6 +109,9 @@ fn create_providers(
                 e,
                 ctx,
             ));
+            
+            // Ollama uses configs from .env (already initialized defaults above)
+
             (
                 provider.clone() as Arc<dyn mentalist::ModelProvider>,
                 provider.clone() as Arc<dyn mem_core::EmbeddingProvider>,
@@ -96,12 +120,21 @@ fn create_providers(
         }
     };
 
+    // Try to discover more accurate context window if provider supports it
+    let metadata = primary_model.discover_metadata().await;
+    if metadata.context_window > 2048 {
+        context_window = metadata.context_window;
+    }
+
     Ok(ProviderStack {
         model: primary_model,
         embeddings,
         token_counter,
+        context_window,
+        embedding_dimension,
     })
 }
+
 
 struct LogVisitor {
     message: String,
@@ -183,7 +216,7 @@ async fn main() -> Result<()> {
     let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(1000);
     let (input_tx, mut input_rx) = mpsc::channel::<String>(100);
 
-    let providers = create_providers(&config, event_tx.clone())?;
+    let providers = create_providers(&config, event_tx.clone()).await?;
     
     let pref_dir = std::path::PathBuf::from(".agent");
     let prefs = Arc::new(tokio::sync::Mutex::new(PrefsManager::new(&pref_dir)));
@@ -195,11 +228,14 @@ async fn main() -> Result<()> {
         providers.token_counter,
         prefs,
         config.clone(),
+        Some(providers.embedding_dimension),
+        Some(providers.context_window),
     )
     .await?;
 
     let mut state = AppState::new();
-    state.max_tokens = config.model_context_window;
+    state.max_tokens = providers.context_window;
+
     state.available_commands = manager.get_available_commands().await?;
     state.log.push(LogEntry::Gypsy(
         "Gypsy agent is ready. Session initialized and secured. 🔮".into(),

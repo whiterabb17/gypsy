@@ -147,7 +147,10 @@ async fn test_e2e_autonomous_tool_loop() {
         Arc::new(DummyCounter),
         make_prefs(),
         config,
+        None,
+        None,
     )
+
     .await
     .unwrap();
 
@@ -199,7 +202,10 @@ async fn test_session_persistence_context() {
         Arc::new(DummyCounter),
         make_prefs(),
         config,
+        None,
+        None,
     )
+
     .await
     .unwrap();
 
@@ -249,7 +255,10 @@ async fn test_step_limit_enforcement() {
         Arc::new(DummyCounter),
         make_prefs(),
         config,
+        None,
+        None,
     )
+
     .await
     .unwrap();
 
@@ -315,7 +324,10 @@ async fn test_fallback_parsing_e2e() {
         Arc::new(DummyCounter),
         make_prefs(),
         config,
+        None,
+        None,
     )
+
     .await
     .unwrap();
 

@@ -48,6 +48,8 @@ pub struct AppConfig {
     pub mcp_servers: HashMap<String, String>,
     #[serde(default)]
     pub mcp_filesystem_paths: Vec<String>,
+    #[serde(default)]
+    pub allowed_directories: Vec<String>,
     pub firecrawl_api_key: Option<Secret<String>>,
     pub skills_path: String,
     pub log_level: String,
@@ -156,6 +158,11 @@ impl AppConfig {
         if let Ok(fs_paths) = std::env::var("MCP_FS_PATHS") {
             config.mcp_filesystem_paths =
                 fs_paths.split(',').map(|s| s.trim().to_string()).collect();
+        }
+
+        if let Ok(allowed_dirs) = std::env::var("ALLOWED_DIRECTORIES") {
+            config.allowed_directories =
+                allowed_dirs.split(',').map(|s| s.trim().to_string()).collect();
         }
 
         config

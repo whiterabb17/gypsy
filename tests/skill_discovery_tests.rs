@@ -100,7 +100,10 @@ description: A valid skill test.
         Arc::new(MockCounter),
         make_prefs(),
         config,
+        None,
+        None,
     )
+
     .await
     .unwrap();
 
@@ -147,7 +150,10 @@ description: Test skill command
         Arc::new(MockCounter),
         make_prefs(),
         config,
+        None,
+        None,
     )
+
     .await
     .unwrap();
 
@@ -194,7 +200,10 @@ async fn test_summarize_command() {
         Arc::new(MockCounter),
         make_prefs(),
         config,
+        None,
+        None,
     )
+
     .await
     .unwrap();
 

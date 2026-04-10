@@ -2,3 +2,4 @@
 .agent
 .env
 test_*
+.env

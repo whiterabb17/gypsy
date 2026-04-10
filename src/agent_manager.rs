@@ -101,6 +101,8 @@ impl AgentManager {
         token_counter: Arc<dyn TokenCounter>,
         prefs: Arc<Mutex<PrefsManager>>,
         config: AppConfig,
+        embedding_dim_override: Option<usize>,
+        context_window_override: Option<usize>,
     ) -> GypsyResult<Self> {
         let _ = event_tx
             .send(AgentEvent::Status("Initializing Gypsy...".into()))
@@ -118,18 +120,26 @@ impl AgentManager {
             vault_path = canon;
         }
 
+        // Apply context window override if present
+        if let Some(ctx) = context_window_override {
+            provider.set_context_window(ctx);
+        }
+
         // 1. Initialize Memory (MindPalace)
         let mp_config = config.to_mindpalace_config();
+        let embedding_dim = embedding_dim_override.unwrap_or(config.embedding_dimension);
+
         let mp_middleware = Arc::new(mentalist::middleware::MindPalaceMiddleware::hardened(
             storage.clone(),
             provider.clone(),
             embeddings.clone(),
             token_counter.clone(),
             session_id.clone(),
-            config.embedding_dimension,
+            embedding_dim,
             vault_path.clone(),
             Some(mp_config),
         ));
+
         let brain = mp_middleware.brain.clone();
 
         // Correct MindPalaceMemory initialization with retriever
@@ -160,20 +170,23 @@ impl AgentManager {
         let canonical_current = std::fs::canonicalize(&current_dir)
             .unwrap_or(current_dir.clone());
             
-        let fs_paths = if config.mcp_filesystem_paths.is_empty() {
-            vec![canonical_current.to_string_lossy().to_string()]
-        } else {
-            config
-                .mcp_filesystem_paths
-                .iter()
-                .map(|p| {
-                    let path = PathBuf::from(p);
-                    std::fs::canonicalize(&path).unwrap_or(path)
-                })
-                .filter(|p| p.exists())
-                .map(|p| p.to_string_lossy().to_string())
-                .collect::<Vec<_>>()
-        };
+        let mut all_paths = vec![canonical_current.clone()];
+        for p in config.mcp_filesystem_paths.iter().chain(config.allowed_directories.iter()) {
+            let path = PathBuf::from(p);
+            if let Ok(canon) = std::fs::canonicalize(&path) {
+                all_paths.push(canon);
+            } else if path.exists() {
+                all_paths.push(path);
+            }
+        }
+
+        all_paths.sort();
+        all_paths.dedup();
+
+        let fs_paths: Vec<String> = all_paths
+            .into_iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
 
         // Parallel Initialization
         let mut spawn_handles = Vec::new();
@@ -315,12 +328,12 @@ impl AgentManager {
 
         // Add sandbox awareness to early context
         let mut initial_context = mem_core::Context::default();
-        let allowed_root = fs_paths.first().cloned().unwrap_or_else(|| canonical_current.to_string_lossy().to_string());
+        let roots_list = fs_paths.join("', '");
         initial_context.items.push(mem_core::MemoryItem {
             role: mem_core::MemoryRole::System,
             content: format!(
-                "CRITICAL SECURITY: Your filesystem access is restricted to the following root: '{}'. Always use paths within this directory. Your current working directory is also set to this root.",
-                allowed_root
+                "CRITICAL SECURITY: Your filesystem access is restricted to the following roots: '{}'. Always use paths within these directories. Your current working directory is also set to the first root.",
+                roots_list
             ),
             timestamp: chrono::Utc::now().timestamp() as u64,
             metadata: serde_json::json!({"type": "sandbox_init"}),

@@ -88,7 +88,10 @@ async fn test_agent_manager_init() {
         Arc::new(MockCounter),
         prefs,
         config,
+        None,
+        None,
     )
+
     .await;
 
     assert!(manager.is_ok());
@@ -111,7 +114,10 @@ async fn test_tool_registry_ready() {
         Arc::new(MockCounter),
         prefs,
         config,
+        None,
+        None,
     )
+
     .await
     .unwrap();
 
@@ -154,7 +160,10 @@ async fn test_command_handler() {
         Arc::new(MockCounter),
         prefs,
         config,
+        None,
+        None,
     )
+
     .await
     .unwrap();
 
@@ -214,7 +223,10 @@ async fn test_agent_manager_session_persistence() {
         Arc::new(MockCounter),
         prefs,
         config.clone(),
+        None,
+        None,
     )
+
     .await
     .unwrap();
 
@@ -244,7 +256,10 @@ async fn test_agent_manager_session_persistence() {
         Arc::new(MockCounter),
         prefs2,
         config,
+        None,
+        None,
     )
+
     .await
     .unwrap();
 
@@ -277,7 +292,10 @@ async fn test_vector_memory_recall() {
         Arc::new(MockCounter),
         prefs,
         config,
+        None,
+        None,
     )
+
     .await
     .unwrap();
 
@@ -317,7 +335,10 @@ async fn test_consume_command() {
         Arc::new(MockCounter),
         prefs,
         config,
+        None,
+        None,
     )
+
     .await
     .unwrap();
 
