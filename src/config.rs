@@ -68,7 +68,7 @@ impl AppConfig {
             // Defaults
             .set_default("provider", "ollama")
             .unwrap()
-            .set_default("model_name", "qwen2.5-coder:3b")
+            .set_default("model_name", "gemma4:26b")
             .unwrap()
             .set_default("embedding_model", "nomic-embed-text")
             .unwrap()
@@ -108,7 +108,7 @@ impl AppConfig {
             .unwrap()
             .set_default("log_level", "info")
             .unwrap()
-            .set_default("model_context_window", 32768)
+            .set_default("model_context_window", 262144)
             .unwrap()
             .set_default("session_id", "")
             .unwrap()
