@@ -349,8 +349,32 @@ async fn main() -> Result<()> {
                                 }
                             }
                         }
+                        KeyCode::Char('v') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                            match arboard::Clipboard::new() {
+                                Ok(mut clipboard) => {
+                                    match clipboard.get_text() {
+                                        Ok(text) => {
+                                            if state.input_buffer.len() + text.len() < 65536 {
+                                                state.input_buffer.push_str(&text);
+                                            } else {
+                                                state.log.push(LogEntry::Warn("Paste ignored: Input buffer limit (64KB) reached.".into()));
+                                            }
+                                        }
+                                        Err(e) => {
+                                            state.log.push(LogEntry::Error(format!("Paste error: {}", e)));
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    state.log.push(LogEntry::Error(format!("Failed to init clipboard: {}", e)));
+                                }
+                            }
+                        }
+                        KeyCode::Char('k') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                            state.input_buffer.clear();
+                        }
                         KeyCode::Char(c) => {
-                            if state.input_buffer.len() < 4096 {
+                            if state.input_buffer.len() < 65536 {
                                 state.input_buffer.push(c);
                             }
                             if state.input_buffer.starts_with('/') {
@@ -475,13 +499,22 @@ async fn main() -> Result<()> {
                 AgentEvent::PhaseProgress(p) => {
                     state.phase_progress = Some(p);
                 }
-                AgentEvent::ToolResult { name, success } => {
+                AgentEvent::ToolResult { id, name, success } => {
                     state.tool_status.insert(name, success);
+                    if success {
+                        state.completed_tasks.insert(id);
+                    }
+                }
+                AgentEvent::PlanUpdate(plan) => {
+                    state.active_plan = Some(plan);
+                    state.completed_tasks.clear();
                 }
                 AgentEvent::AwaitingApproval(plan) => {
                     state.status = "Awaiting Approval".into();
                     state.is_thinking = false;
                     state.pending_plan = Some(plan.clone());
+                    state.active_plan = Some(plan.clone());
+                    state.completed_tasks.clear();
                     state.log.push(LogEntry::System(format!("Plan requires approval ({} tasks). Type /approve to proceed.", plan.tasks.len())));
                 }
                 AgentEvent::Error(e) => {
