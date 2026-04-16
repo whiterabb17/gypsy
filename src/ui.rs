@@ -69,6 +69,8 @@ pub struct AppState {
     pub last_input_tokens: usize,
     pub last_output_tokens: usize,
     pub pending_plan: Option<mentalist::mem_planner::ExecutionPlan>,
+    pub active_plan: Option<mentalist::mem_planner::ExecutionPlan>,
+    pub completed_tasks: std::collections::HashSet<mentalist::mem_planner::TaskId>,
     pub reasoning_rects: HashMap<usize, Rect>, // Map log index to clickable Rect
 }
 
@@ -113,6 +115,8 @@ impl AppState {
             last_input_tokens: 0,
             last_output_tokens: 0,
             pending_plan: None,
+            active_plan: None,
+            completed_tasks: std::collections::HashSet::new(),
             reasoning_rects: HashMap::new(),
         }
     }
@@ -372,21 +376,21 @@ pub fn ui(f: &mut Frame, state: &mut AppState) {
     // Right Column: Dashboard
     let right_constraints = if state.show_debug {
         vec![
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Min(5), // Log panel takes middle space
-            Constraint::Length(5),
+            Constraint::Length(3), // Diagnostics
+            Constraint::Length(3), // Token Usage
+            Constraint::Length(3), // Capacity & Tools
+            Constraint::Length(8), // Tasks Box
+            Constraint::Min(5),    // Under-the-Hood
+            Constraint::Length(5), // Quick Help
         ]
     } else {
         vec![
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Min(0), // Help Area will expand
-            Constraint::Length(5),
+            Constraint::Length(3), // Diagnostics
+            Constraint::Length(3), // Token Usage
+            Constraint::Length(3), // Capacity & Tools
+            Constraint::Min(0),    // Tasks Box (expands)
+            Constraint::Length(0), // Under-the-Hood (hidden)
+            Constraint::Length(5), // Quick Help
         ]
     };
 
@@ -447,66 +451,93 @@ pub fn ui(f: &mut Frame, state: &mut AppState) {
         .block(Block::default().borders(Borders::ALL).title(" Token Usage "));
     f.render_widget(token_para, right_chunks[1]);
 
-    // 3. Context & Tools OR Plan Review
-    if let Some(ref plan) = state.pending_plan {
-        let mut plan_text = vec![
-            Line::from(vec![
-                Span::styled("PLAN REQUIRES APPROVAL", Style::default().fg(Color::Cyan).add_modifier(ratatui::style::Modifier::BOLD)),
-            ]),
-            Line::from(vec![
-                Span::styled(format!("Content: {:.50}...", plan.content), Style::default().fg(Color::Gray)),
-            ]),
-            Line::from(""),
-        ];
+    // 3. Capacity & Tools (Always shown)
+    let mut mem_text = vec![
+        Line::from(vec![
+            Span::styled("Context Size: ", Style::default().fg(Color::Gray)),
+            Span::raw(format!("{}", state.context_size)),
+        ]),
+        Line::from(vec![
+            Span::styled("Tool Count:   ", Style::default().fg(Color::Gray)),
+            Span::styled(format!("{}", state.tool_calls_total), Style::default().fg(Color::Magenta)),
+        ]),
+    ];
 
-        for task in &plan.tasks {
-            let status_icon = " [ ] ";
-            plan_text.push(Line::from(vec![
-                Span::styled(status_icon, Style::default().fg(Color::Yellow)),
-                Span::raw(&task.1.name),
-            ]));
-        }
-
-        let plan_para = Paragraph::new(plan_text)
-            .block(Block::default().borders(Borders::ALL).title(" Plan Review "));
-        f.render_widget(plan_para, right_chunks[2]);
-    } else {
-        let mut mem_text = vec![
-            Line::from(vec![
-                Span::styled("Context Size: ", Style::default().fg(Color::Gray)),
-                Span::raw(format!("{}", state.context_size)),
-            ]),
-            Line::from(vec![
-                Span::styled("Tool Count:   ", Style::default().fg(Color::Gray)),
-                Span::styled(format!("{}", state.tool_calls_total), Style::default().fg(Color::Magenta)),
-            ]),
-        ];
-
-        // Show last 2 tool results
-        let mut recent_tools: Vec<_> = state.tool_status.iter().collect();
-        recent_tools.sort_by(|a, b| a.0.cmp(b.0)); 
-        for (name, success) in recent_tools.iter().take(2) {
-            let color = if **success { Color::Green } else { Color::Red };
-            let icon = if **success { "✓" } else { "✗" };
-            mem_text.push(Line::from(vec![
-                Span::styled(format!(" {} ", icon), Style::default().fg(color)),
-                Span::styled((*name).clone(), Style::default().fg(Color::Gray)),
-            ]));
-        }
-
-        let mem_para = Paragraph::new(mem_text)
-            .block(Block::default().borders(Borders::ALL).title(" Capacity & Tools "));
-        f.render_widget(mem_para, right_chunks[2]);
-        
-        // Sparkline for context history
-        if !state.context_history.is_empty() {
-            let sparkline_area = Rect::new(right_chunks[2].x + 1, right_chunks[2].y + 1, right_chunks[2].width - 2, 1);
-            let sparkline = Sparkline::default()
-                .data(&state.context_history)
-                .style(Style::default().fg(Color::Blue));
-            f.render_widget(sparkline, sparkline_area);
-        }
+    // Show last 2 tool results
+    let mut recent_tools: Vec<_> = state.tool_status.iter().collect();
+    recent_tools.sort_by(|a, b| a.0.cmp(b.0)); 
+    for (name, success) in recent_tools.iter().take(2) {
+        let color = if **success { Color::Green } else { Color::Red };
+        let icon = if **success { "✓" } else { "✗" };
+        mem_text.push(Line::from(vec![
+            Span::styled(format!(" {} ", icon), Style::default().fg(color)),
+            Span::styled((*name).clone(), Style::default().fg(Color::Gray)),
+        ]));
     }
+
+    let mem_para = Paragraph::new(mem_text)
+        .block(Block::default().borders(Borders::ALL).title(" Capacity & Tools "));
+    f.render_widget(mem_para, right_chunks[2]);
+    
+    // Sparkline for context history
+    if !state.context_history.is_empty() {
+        let sparkline_area = Rect::new(right_chunks[2].x + 1, right_chunks[2].y + 1, right_chunks[2].width - 2, 1);
+        let sparkline = Sparkline::default()
+            .data(&state.context_history)
+            .style(Style::default().fg(Color::Blue));
+        f.render_widget(sparkline, sparkline_area);
+    }
+
+    // 4. Tasks Box (Active or Pending Plan)
+    let mut task_text = Vec::new();
+    let mut task_title = " Tasks Box ".to_string();
+
+    if let Some(ref plan) = state.pending_plan {
+        task_title = " Plan Review (PENDING) ".to_string();
+        task_text.push(Line::from(vec![
+            Span::styled("PLAN REQUIRES APPROVAL", Style::default().fg(Color::Cyan).add_modifier(ratatui::style::Modifier::BOLD)),
+        ]));
+        task_text.push(Line::from(vec![
+            Span::styled(format!("Content: {:.50}...", plan.content), Style::default().fg(Color::Gray)),
+        ]));
+        task_text.push(Line::from(""));
+
+        let mut tasks: Vec<_> = plan.tasks.values().collect();
+        tasks.sort_by(|a, b| a.id.0.cmp(&b.id.0)); // Simple sort by ID
+        for task in tasks {
+            let status_icon = " [ ] ";
+            task_text.push(Line::from(vec![
+                Span::styled(status_icon, Style::default().fg(Color::Yellow)),
+                Span::raw(&task.name),
+            ]));
+        }
+    } else if let Some(ref plan) = state.active_plan {
+        task_title = " Active Plan ".to_string();
+        let mut tasks: Vec<_> = plan.tasks.values().collect();
+        tasks.sort_by(|a, b| a.id.0.cmp(&b.id.0));
+        
+        for task in tasks {
+            let (status_icon, color) = if state.completed_tasks.contains(&task.id) {
+                (" [✓] ", Color::Green)
+            } else {
+                (" [ ] ", Color::Yellow)
+            };
+            
+            task_text.push(Line::from(vec![
+                Span::styled(status_icon, Style::default().fg(color)),
+                Span::raw(&task.name),
+            ]));
+        }
+    } else {
+        task_text.push(Line::from(vec![
+            Span::styled("No active plan.", Style::default().fg(Color::DarkGray)),
+        ]));
+    }
+
+    let task_para = Paragraph::new(task_text)
+        .block(Block::default().borders(Borders::ALL).title(task_title))
+        .wrap(Wrap { trim: true });
+    f.render_widget(task_para, right_chunks[3]);
 
     if state.show_debug {
         // Render Under-the-Hood Logs

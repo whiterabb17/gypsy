@@ -64,9 +64,11 @@ pub enum AgentEvent {
     Progress(f32),
     PhaseProgress(f32),
     ToolResult {
+        id: mem_planner::TaskId,
         name: String,
         success: bool,
     },
+    PlanUpdate(mem_planner::ExecutionPlan),
     AwaitingApproval(mem_planner::ExecutionPlan),
     Error(String),
 }
@@ -542,10 +544,13 @@ impl AgentManager {
                         .send(AgentEvent::Status(format!("Tool: {}", t)))
                         .await;
                 }
-                RuntimeEvent::ToolFinished(_id, name, _res, success) => {
+                RuntimeEvent::ToolFinished(id, name, _res, success) => {
                     let _ = self
                         .event_tx
-                        .send(AgentEvent::ToolResult { name, success }).await;
+                        .send(AgentEvent::ToolResult { id, name, success }).await;
+                }
+                RuntimeEvent::PlanStarted(plan) => {
+                    let _ = self.event_tx.send(AgentEvent::PlanUpdate(plan)).await;
                 }
                 RuntimeEvent::MetricUpdate { 
                     step, 
@@ -564,7 +569,6 @@ impl AgentManager {
                         tool_name: None,
                     }).await;
                 }
-                RuntimeEvent::PlanStarted(_) => {}
             }
         }
 

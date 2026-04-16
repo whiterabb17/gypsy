@@ -357,6 +357,8 @@ async fn main() -> Result<()> {
                                 state.is_thinking = true;
                                 state.last_input_tokens = 0;
                                 state.last_output_tokens = 0;
+                                state.active_plan = None;
+                                state.completed_tasks.clear();
                                 if let Err(e) = input_tx.try_send(input) {
                                     state
                                         .log
@@ -511,8 +513,12 @@ async fn main() -> Result<()> {
                 AgentEvent::PhaseProgress(p) => {
                     state.phase_progress = Some(p);
                 }
-                AgentEvent::ToolResult { name, success } => {
+                AgentEvent::ToolResult { id, name, success } => {
                     state.tool_status.insert(name, success);
+                    state.completed_tasks.insert(id);
+                }
+                AgentEvent::PlanUpdate(plan) => {
+                    state.active_plan = Some(plan);
                 }
                 AgentEvent::AwaitingApproval(plan) => {
                     state.status = "Awaiting Approval".into();
