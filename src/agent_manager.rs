@@ -166,6 +166,13 @@ impl AgentManager {
         // Register Builtin Tools
         let _ = multi_executor.add_tool(Arc::new(EchoTool)).await;
 
+        // Register Progressive Disclosure Memory Tools
+        if let Err(e) = mp_middleware.register_memory_tools(&multi_executor.registry).await {
+            let _ = event_tx.send(AgentEvent::Error(format!("Failed to register memory tools: {}", e))).await;
+        } else {
+            let _ = event_tx.send(AgentEvent::Status("Memory Tools & Telemetry Ready (Port 37777)".into())).await;
+        }
+
         let current_dir = std::env::current_dir()?;
         let canonical_current = std::fs::canonicalize(&current_dir)
             .unwrap_or(current_dir.clone());
@@ -535,10 +542,10 @@ impl AgentManager {
                         .send(AgentEvent::Status(format!("Tool: {}", t)))
                         .await;
                 }
-                RuntimeEvent::ToolFinished(t, _res, success) => {
+                RuntimeEvent::ToolFinished(_id, name, _res, success) => {
                     let _ = self
                         .event_tx
-                        .send(AgentEvent::ToolResult { name: t, success }).await;
+                        .send(AgentEvent::ToolResult { name, success }).await;
                 }
                 RuntimeEvent::MetricUpdate { 
                     step, 
@@ -557,6 +564,7 @@ impl AgentManager {
                         tool_name: None,
                     }).await;
                 }
+                RuntimeEvent::PlanStarted(_) => {}
             }
         }
 
