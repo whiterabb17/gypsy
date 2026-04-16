@@ -1,6 +1,6 @@
-# 🎩 Gypsy (v0.2.0): The Hardened, Stateful TUI Agent
+# 🎩 Gypsy (v0.3.0): The Hardened, Stateful TUI Agent
 
-![Rust](https://img.shields.io/badge/language-Rust-orange.svg) ![Status: Production-Ready](https://img.shields.io/badge/Status-Production--Ready-brightgreen.svg) ![Mentalist](https://img.shields.io/badge/Runtime-Mentalist--v0.3.8-blue.svg) ![MindPalace](https://img.shields.io/badge/Memory-MindPalace--v0.3.0-magenta.svg)
+![Rust](https://img.shields.io/badge/language-Rust-orange.svg) ![Status: Production-Ready](https://img.shields.io/badge/Status-Production--Ready-brightgreen.svg) ![Mentalist](https://img.shields.io/badge/Runtime-Mentalist--v0.4.0-blue.svg) ![MindPalace](https://img.shields.io/badge/Memory-MindPalace--v0.4.0-magenta.svg)
 
 **Gypsy** is the flagship Terminal User Interface (TUI) agent for the **MindPalace** ecosystem. Built on the **Mentalist** cognitive runtime, it provides a professional-grade, stateful workbench for high-agency automation, multi-agent coordination, and secure filesystem operations.
 
@@ -29,6 +29,7 @@ Gypsy utilizes the **MindPalace Hardened Middleware** to manage its memory pipel
 | **P5** | **Emergency** | Heuristic-driven pruning during token budget crises. | `mem-compactor` |
 | **P6** | **Intelligence** | Fact extraction & graph-based knowledge mapping. | `mem-extractor` |
 | **P7** | **Coordination** | Cross-session context syncing & collective learning. | `mem-bridge` |
+| **P8** | **PD Mode** | Progressive Disclosure via selective FTS/Vector search. | `mem-broker` |
 
 ---
 
